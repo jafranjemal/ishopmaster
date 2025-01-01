@@ -1,0 +1,13 @@
+const mongoose = require("mongoose");
+
+const transactionSchema = new mongoose.Schema({
+  account_id: { type: mongoose.Schema.Types.ObjectId, ref: "Account", required: true },
+  amount: { type: Number, required: true },
+  transaction_type: { type: String, enum: ["Deposit", "Withdrawal"], required: true },
+  reason: { type: String, required: true }, // For example, "Salary", "Purchase", "Payment", etc.
+  transaction_date: { type: Date, default: Date.now },
+  balance_after_transaction: { type: Number, required: true }, // This is the new balance after the transaction
+});
+
+const Transaction = mongoose.model("Transaction", transactionSchema);
+module.exports = Transaction;

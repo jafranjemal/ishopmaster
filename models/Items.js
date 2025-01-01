@@ -21,14 +21,14 @@ const ItemSchema = new mongoose.Schema(
     costPrice: { type: Number }, // Purchase cost for not selling items    
     purchaseDate: { type: Date },
      
-
+    requiresIMEI: { type: Boolean, default: false }, // New flag field for IMEI requirement
     imei: {
         type: String,
         unique: true,
         validate: {
           validator: function (v) {
             // Only require IMEI if the category is 'Device'
-            if (this.category === 'Device' && (!v || v.trim() === '')) {
+            if (this.requiresIMEI && (!v || v.trim() === '')) {
               return false; // IMEI must not be null or empty for devices
             }
             return true; // Allow for non-devices or valid IMEI for devices
@@ -74,6 +74,7 @@ const ItemSchema = new mongoose.Schema(
        // Quantity available
     },
     purchaseQuantity: { type: Number },
+    profitMargin: { type: Number },
 
     // Fields Specific to Tools
     toolDetails: {
