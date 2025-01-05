@@ -33,6 +33,9 @@ const purchaseSchema = new mongoose.Schema({
       profitMargin: { type: Number, required: false },
       sellingPrice: { type: Number, required: true },
       batch_number: { type: String, required: true }, // Unique Batch ID
+      isSerialized: {type:Boolean, default:false},
+      serializedItems:[ 
+      ]
     },
   ],
   created_at: { type: Date, default: Date.now },

@@ -41,14 +41,14 @@ exports.addSupplier = async (req, res) => {
     // Automatically create a supplier's account
     const account_name = `${business_name}'s Payable Account (${newSupplier.supplier_id})`; // Custom account name for better clarity 
     const account_type = "Payable"; 
-    const balance = financial.opening_balance || 0; // Default balance 
+    const balance = financial.opening_balance|| 0; // Default balance 
     const account_owner_type = "Supplier"; 
     const related_party_id = newSupplier._id; 
     
     const newAccount = new Account({ 
         account_name, 
         account_type, 
-        balance, 
+        balance : balance *-1, 
         account_owner_type, 
         related_party_id, 
         description: `Initialized ${account_name} with a ${account_type} account type for ${business_name}. The opening balance is set to ${balance}. This account will manage all transactions and dues related to the supplier, identified by ID: ${related_party_id}.`, 

@@ -5,8 +5,6 @@ const stockController = require('../controllers/stockController');
 // Route to create new stock entry
 router.post('/', stockController.createStock);
 
-// Route to get all stocks for an item
-router.get('/item/:item_id', stockController.getStockByItem);
 
 // Route to update stock after sale
 router.put('sale', stockController.updateStockOnSale);
@@ -19,11 +17,14 @@ router.get('current-stock-value', stockController.getCurrentStockValue);
 router.get('/batch/:item_id/:batch_number', stockController.getStockByBatch);
 
 router.get('/items-with-stock', stockController.getAllItemsWithStock);
+router.get('/items-with-unified-stock', stockController.getUnifiedStock);
 
 
 // Route to get stock details for a specific item 
 //Provides a detailed view of all batches for a single item
-router.get('/item/:item_id/stock', stockController.getStockForItem);
+
+// Route to get all stocks for an item
+router.get('/item/:itemId', stockController.getItemStockDetails);
 
 
 router.get('/purchase/:purchaseId', stockController.getStockByPurchaseId);

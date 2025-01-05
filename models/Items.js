@@ -21,28 +21,15 @@ const ItemSchema = new mongoose.Schema(
     costPrice: { type: Number }, // Purchase cost for not selling items    
     purchaseDate: { type: Date },
      
-    requiresIMEI: { type: Boolean, default: false }, // New flag field for IMEI requirement
-    imei: {
-        type: String,
-        unique: true,
-        validate: {
-          validator: function (v) {
-            // Only require IMEI if the category is 'Device'
-            if (this.requiresIMEI && (!v || v.trim() === '')) {
-              return false; // IMEI must not be null or empty for devices
-            }
-            return true; // Allow for non-devices or valid IMEI for devices
-          },
-          message: 'IMEI is required and cannot be empty for devices.',
-        },
-      },
+    //requiresIMEI: { type: Boolean, default: false }, // New flag field for IMEI requirement
+    serialized: { type: Boolean, default: false }, // Determines if item is serialized
 
     // Fields Specific to Devices
      
       deviceCategory: { type: String }, // RAM size
       deviceSubCategory: { type: String }, // RAM size
-      ram: { type: String }, // RAM size
-      storage: { type: String }, // Storage size
+      ramSize: { type: String }, // RAM size
+      storageSize: { type: String }, // Storage size
       displaySize: { type: String }, // Display size
       rearCamera: { type: String }, // Rear camera pixels
       frontCamera: { type: String }, // Front camera pixels
