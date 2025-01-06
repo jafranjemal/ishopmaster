@@ -645,16 +645,18 @@ exports.getUnifiedStock = async (req, res) => {
       const lastSellingPrice = item.serialized
       ? serialized?.lastSellingPrice || 0
       : nonSerialized?.lastSellingPrice || 0;
+
     const lastUnitCost = item.serialized
       ? serialized?.lastUnitCost || 0
       : nonSerialized?.lastUnitCost || 0;
 
+ 
 
       return {
        ...item.toObject(),
        
        lastSellingPrice,
-       lastUnitCost: item.serialized ? serialized.lastUnitCost : nonSerialized.lastUnitCost,
+       lastUnitCost,
         
         isSerialized: item.serialized,
         totalStock: (nonSerialized?.totalStock || 0) + (serialized?.totalStock || 0),
