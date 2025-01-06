@@ -622,7 +622,7 @@ exports.getUnifiedStock = async (req, res) => {
           lastUnitCost: { $last: '$unitCost' }, // Count of available serialized items
           items: {
             $push: {
-              serial_number: "$serial_number",
+              serialNumber: "$serialNumber",
               batch_number: "$batch_number",
               unitCost: "$unitCost",
               sellingPrice: "$sellingPrice",
