@@ -24,6 +24,7 @@ const customerRoutes = require("./routes/customerRoutes");
 const brandRoutes = require("./routes/brandRoutes");
 const unitRoutes = require("./routes/unitRoutes");
 const employeeRoutes = require("./routes/employeeRoutes");
+const paymentRoutes = require("./routes/paymentRoutes");
 
 app.use('/api/items', productRoutes);
 app.use("/api/suppliers", supplierRoutes);
@@ -36,5 +37,6 @@ app.use("/api/customers", customerRoutes);
 app.use("/api/brands", brandRoutes);
 app.use("/api/employees", employeeRoutes);
 app.use("/api/units", unitRoutes);
+app.use("/api/payments", paymentRoutes);
 
 app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));

@@ -232,6 +232,23 @@ exports.getPurchaseById = async (req, res) => {
   }
 };
 
+exports.getDuePurchaseBySupplierId = async (req, res) => {
+  try {
+    const { id } = req.params;
+const purchases = await Purchase.find({ 'supplier': id, 'payment_due_amount': { $gt: 0 } })
+.populate("supplier")
+.populate("purchasedItems.item_id").sort({
+  _id:-1
+})
+    if (purchases.length === 0) {
+      return res.status(404).json({ message: "Purchase not found" });
+    }
+    res.status(200).json(purchases);
+  } catch (error) {
+    res.status(500).json({ message: "Error retrieving purchase", error });
+  }
+};
+
 // Update a purchase
 exports.updatePurchase = async (req, res) => {
   try {

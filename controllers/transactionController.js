@@ -44,7 +44,7 @@ exports.createTransaction = async (req, res) => {
       // Create the transaction
       const newTransaction = new Transaction({
         account_id,
-        amount,
+        amount : transaction_type === "Withdrawal" ? amount *-1 : amount,
         transaction_type,
         reason,
         balance_after_transaction,
