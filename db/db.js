@@ -9,7 +9,7 @@ const localUri = 'mongodb://localhost:27017/mobile-shop'
 const mongoUri = 'mongodb+srv://jafranjemal:jafran123@cluster0.yai9p.mongodb.net/ishopmaster?retryWrites=true&w=majority'
 const connectDB = async () => {
     try {
-        await mongoose.connect(localUri, {
+        await mongoose.connect(mongoUri, {
             useNewUrlParser: true,
             useUnifiedTopology: true,
         });
