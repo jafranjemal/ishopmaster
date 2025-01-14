@@ -73,7 +73,38 @@ const calculateProfit = async (req, res) => {
     }
 };
 
+// Edit an existing product
+const editProduct = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const updatedProduct = await Product.findByIdAndUpdate(id, req.body, { new: true });
+        if (!updatedProduct) {
+            return res.status(404).json({ message: 'Product not found' });
+        }
+        res.status(200).json(updatedProduct);
+    } catch (err) {
+        res.status(400).json({ message: err.message });
+    }
+};
+
+// Delete an existing product
+const deleteProduct = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const deletedProduct = await Product.findByIdAndDelete(id);
+        if (!deletedProduct) {
+            return res.status(404).json({ message: 'Product not found' });
+        }
+        res.status(200).json({ message: 'Product deleted successfully' });
+    } catch (err) {
+        res.status(400).json({ message: err.message });
+    }
+};
+
+
 module.exports = {
+    editProduct,
+    deleteProduct,
     getProducts,
     getProductById,
     addProduct,
