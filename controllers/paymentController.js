@@ -78,7 +78,7 @@ exports.addPayment = async (req, res) => {
     amount,
     description,
     from_account_id,
-    payment_method,
+    payment_methods,
     references,
     to_account_id,
     transaction_type,
@@ -95,7 +95,7 @@ exports.addPayment = async (req, res) => {
       amount,
       description,
       from_account_id,
-      payment_method,
+      payment_methods,
       references,
       to_account_id,
       transaction_type,
@@ -169,19 +169,97 @@ const handleSupplierPaymentUpdates = async (purchaseOrders) => {
 // Controller function to get all payments
 exports.getPayments = async (req, res) => {
   try {
-    const payments = await Payment.find().populate(
-      "from_account_id to_account_id"
-    );
+    const payments = await Payment.find()
+      .populate('from_account_id to_account_id')
+      .populate('references.supplier')
+      .populate('references.employee')
+      .populate('references.customer')
+      .populate( 
+        'references.purchase_orders.purchase_id'
+        
+       )
+      .populate({
+        path: 'references.sale',
+        populate: {
+          path: 'customer items.item_id'
+        }
+      }).sort({ transaction_date: -1 });
+
     res.status(200).json(payments);
   } catch (error) {
-    console.error(error);
+    console.error('Error fetching payments:', error);
     res.status(500).json({
-      message: "Error fetching payments",
-      error: error.message,
+      message: 'Error fetching payments',
+      error: error.message
     });
   }
 };
 
+// With pagination and filtering
+exports.getPaymentsWithOptions = async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 10,
+      transaction_type,
+      start_date,
+      end_date
+    } = req.query;
+
+    const query = {};
+
+    // Add filters
+    if (transaction_type) {
+      query.transaction_type = transaction_type;
+    }
+
+    if (start_date || end_date) {
+      query.transaction_date = {};
+      if (start_date) query.transaction_date.$gte = new Date(start_date);
+      if (end_date) query.transaction_date.$lte = new Date(end_date);
+    }
+
+    const options = {
+      page: parseInt(page),
+      limit: parseInt(limit),
+      populate: [
+        { path: 'from_account_id' },
+        { path: 'to_account_id' },
+        { path: 'references.supplier' },
+        { path: 'references.employee' },
+        { path: 'references.customer' },
+        {
+          path: 'references.purchase_orders.purchase_id',
+          populate: {
+            path: 'supplier items.item_id'
+          }
+        },
+        {
+          path: 'references.sale',
+          populate: {
+            path: 'customer items.item_id'
+          }
+        }
+      ]
+    };
+
+    const payments = await Payment.paginate(query, options);
+
+    res.status(200).json({
+      payments: payments.docs,
+      totalPages: payments.totalPages,
+      currentPage: payments.page,
+      totalRecords: payments.totalDocs
+    });
+
+  } catch (error) {
+    console.error('Error fetching payments:', error);
+    res.status(500).json({
+      message: 'Error fetching payments',
+      error: error.message
+    });
+  }
+};
 // Controller to fetch a payment by its ID
 exports.getPaymentById = async (req, res) => {
   const { paymentId } = req.params;

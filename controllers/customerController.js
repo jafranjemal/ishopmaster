@@ -22,7 +22,7 @@ exports.createCustomer = async (req, res) => {
     await newCustomer.save();
 
     // Automatically create a customer's account
-    const account_name = `${first_name} ${last_name}'s Account`; // Custom account name
+    const account_name = `${first_name}'s Account (${newCustomer.customer_id})`; // Custom account name
     const account_type = "Customer"; 
     const balance = 0; // Default balance
     const account_owner_type = "Customer";
@@ -61,6 +61,36 @@ exports.getAllCustomers = async (req, res) => {
   }
 };
 
+/**
+ * Retrieves all customers and their associated accounts.
+ *
+ * @param {Object} req - The incoming request object.
+ * @param {Object} res - The outgoing response object.
+ */
+exports.getCustomersAndAccounts = async (req, res) => {
+  try {
+    // Fetch all customers
+    const customers = await Customer.find();
+
+    // Fetch all accounts for each customer
+    const customersWithAccounts = await Promise.all(customers.map(async (customer) => {
+      const accounts = await Account.findOne({
+        account_owner_type: "Customer",
+        related_party_id: customer._id,
+      });
+
+      return { ...customer.toObject(), accounts };
+    }));
+
+    // Return the customers and their accounts
+    res.status(200).json(customersWithAccounts);
+  } catch (error) {
+    // Log the error and return a generic error message
+    console.error("Error fetching customers and accounts:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
 // Get a customer by ID
 exports.getCustomerById = async (req, res) => {
   try {
@@ -83,6 +113,7 @@ exports.getCustomerById = async (req, res) => {
     res.status(500).json({ message: "Internal server error", error });
   }
 };
+
 
 // Update a customer
 exports.updateCustomer = async (req, res) => {

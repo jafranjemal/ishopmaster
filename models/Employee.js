@@ -1,13 +1,6 @@
 const mongoose = require("mongoose");
 
-async function generateEmployeeId() {
-    const lastEmployee = await this.constructor.findOne().sort("-createdAt");
-    const currentId = lastEmployee
-      ? parseInt(lastEmployee.supplier_id.replace("EMP-", ""), 10)
-      : 0;
-    const newId = currentId + 1;
-    return `EMP-${String(newId).padStart(6, "0")}`;
-  }
+
 
 
 const employeeSchema = new mongoose.Schema({
@@ -16,11 +9,10 @@ const employeeSchema = new mongoose.Schema({
   email: { type: String,   unique: true },
   phone: { type: String, required: true },
   address: { type: String },
-  roles: { 
-    type: [String], // Example: ["Technician", "Sales"]
-    enum: ["Technician", "Sales", "Manager", "Admin", "Support"],
-    required: true 
-  },
+     roles: [{ 
+         type: mongoose.Schema.Types.ObjectId,
+         ref: 'Role'
+     }],
   salary_type: { 
     type: String, 
     enum: ["Fixed", "Task-Based"], 
@@ -35,6 +27,15 @@ const employeeSchema = new mongoose.Schema({
   updated_at: { type: Date, default: Date.now },
 });
 
+async function generateEmployeeId() {
+  const lastEmployee = await this.constructor.findOne().sort("-created_at");
+  const currentId = lastEmployee
+    ? parseInt(lastEmployee.employee_id.replace("EMP-", ""), 10)
+    : 0;
+  const newId = currentId + 1;
+  return `EMP-${String(newId).padStart(6, "0")}`;
+}
+
 employeeSchema.pre("save", async function (next) {
     if (!this.isNew) return next(); // Skip if the document is not new
   
@@ -48,4 +49,5 @@ employeeSchema.pre("save", async function (next) {
   });
 
 
-module.exports = mongoose.model("Employee", employeeSchema);
+const Employees  = mongoose.model("Employees", employeeSchema);
+module.exports  = Employees;

@@ -632,7 +632,9 @@ exports.getUnifiedStock = async (req, res) => {
       {
         $group: {
           _id: "$item_id",
+          item_id: { $last: "$item_id" },
           totalStock: { $sum: "$availableQty" }, // Sum of availableQty
+          totalSold: { $sum: "$soldQty" }, // Sum of availableQty
           lastSellingPrice: { $last: "$sellingPrice" },
           lastUnitCost: { $last: "$unitCost" }, // Count of available serialized items
           batches: {
@@ -677,8 +679,11 @@ exports.getUnifiedStock = async (req, res) => {
       },
       {
         $group: {
-          _id: "$_id",
+          _id:   "$item_id" ,
           totalStock: { $first: "$totalStock" },
+          totalSold: { $first: "$soldQty" }, // Sum of availableQty
+
+          
           lastSellingPrice: { $first: "$lastSellingPrice" },
           lastUnitCost: { $first: "$lastUnitCost" },
           batches: {
@@ -709,6 +714,7 @@ exports.getUnifiedStock = async (req, res) => {
       {
         $group: {
           _id: "$item_id",
+          item_id: { $last: "$item_id" },
           totalStock: { $sum: 1 }, // Count of available serialized items
           lastSellingPrice: { $last: "$sellingPrice" },
           lastUnitCost: { $last: "$unitCost" },
@@ -749,7 +755,7 @@ exports.getUnifiedStock = async (req, res) => {
       { $unwind: "$supplier_info" },
       {
         $group: {
-          _id: "$_id",
+          _id:   "$item_id" ,
           totalStock: { $first: "$totalStock" },
           lastSellingPrice: { $first: "$lastSellingPrice" },
           lastUnitCost: { $first: "$lastUnitCost" },

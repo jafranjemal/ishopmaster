@@ -23,5 +23,6 @@ router.get("/date-range", paymentController.getPaymentsByDateRange);
 router.get("/summary", paymentController.getPaymentSummary);
 router.get("/", paymentController.getPayments);
 router.post("/", paymentController.addPayment);
-
+router.get('/payments', paymentController.getPaymentsWithOptions);
+router.get('/payments/all', paymentController.getPayments);
 module.exports = router;

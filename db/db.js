@@ -5,8 +5,9 @@ const mongoose = require('mongoose');
 //     ,secretOrKey:'secrect'
 // };
 
-const localUri = 'mongodb://localhost:27017/mobile-shop'
+const localUri = 'mongodb://localhost:27017/ishopmaster'
 const mongoUri = 'mongodb+srv://jafranjemal:jafran123@cluster0.yai9p.mongodb.net/ishopmaster?retryWrites=true&w=majority'
+
 const connectDB = async () => {
     try {
         await mongoose.connect(mongoUri, {

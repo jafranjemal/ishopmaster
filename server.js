@@ -5,8 +5,9 @@ const connectDB = require('./db/db');
 var cors = require("cors");
 const cron = require('node-cron');
 const socketIo = require("socket.io");
-
-
+require('dotenv').config();
+const errorHandler = require('./middleware/errorHandler');
+const { seedDatabase } = require('./seed');
 const app = express();
 const server = http.createServer(app);
 // const io = require('socket.io')(http, {
@@ -21,6 +22,8 @@ const PORT = process.env.PORT || 5000;
 // Middleware
 app.use(bodyParser.json());
 app.use(cors())
+
+
 // Database Connection
 connectDB();
 
@@ -39,7 +42,14 @@ const employeeRoutes = require("./routes/employeeRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
 const barcodeRoutes = require("./routes/barcodeRoutes");
- 
+const salesInvoiceRoutes = require("./routes/salesInvoiceRoutes");
+const userRoutes = require("./routes/userRoutes");
+const shiftsRoutes = require("./routes/shiftRoutes");
+const permissionRoutes = require('./routes/permissionRoutes');
+const authRoutes = require('./routes/authRoutes');
+const roleRoutes = require('./routes/roleRoutes');
+
+
 
 app.use('/api/items', productRoutes);
 app.use("/api/suppliers", supplierRoutes);
@@ -54,7 +64,13 @@ app.use("/api/employees", employeeRoutes);
 app.use("/api/units", unitRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/notifications", notificationRoutes);
-app.use("/api/barcodes", barcodeRoutes);
+app.use("/api/barcode", barcodeRoutes);
+app.use("/api/sales-invoices", salesInvoiceRoutes);
+app.use("/api/users", userRoutes);
+app.use("/api/shifts", shiftsRoutes);
+app.use('/api/permissions', permissionRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/role', roleRoutes);
 // Schedule the task to run every hour
 //cron.schedule('0 * * * *', checkStockLevels);
 // Schedule the task to run every second 
@@ -89,6 +105,42 @@ io.on("connection", (socket) => {
   app.get("/", (req, res) => {
     res.send({ response: "I am alive" }).status(200);
   });
+
+  app.get("/seed", async (req, res) => {
+    try {
+      await seedDatabase();
+      res.status(200).send({ message: "Database seeded successfully" });
+    } catch (error) {
+      console.error(error);
+      res.status(500).send({ message: "Error seeding database" });
+    }
+  });
+
+
+  // Error handling middleware
+// app.use((err, req, res, next) => {
+//   // Handle the error here
+//   res.status(err.status || 500).send({ message: err.message });
+// });
+
+app.use(errorHandler);
+
+  // Unhandled promise rejections
+process.on('unhandledRejection', (err) => {
+  console.log('UNHANDLED REJECTION! 💥 Shutting down...');
+  console.error('Error:', err);
+  server.close(() => {
+    process.exit(1);
+  });
+});
+
+// Uncaught exceptions
+process.on('uncaughtException', (err) => {
+  console.log('UNCAUGHT EXCEPTION! 💥 Shutting down...');
+  console.error('Error:', err);
+  process.exit(1);
+});
+
 
 app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
 io.listen(4000);

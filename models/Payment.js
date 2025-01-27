@@ -1,5 +1,5 @@
 const mongoose = require("mongoose");
-const { generateCustomId } = require("../utility");
+const {  generatePaymentId } = require("../utility");
 
 // const paymentSchema = new mongoose.Schema({
 //   payment_method: {
@@ -83,15 +83,15 @@ const paymentSchema = new mongoose.Schema({
     ],
     transaction_type: { 
       type: String, 
-      enum: ["Supplier Payment", "Employee Payment", "Sale", "Refund", "Deposit", "Withdrawal", "Other"], 
+      enum: ["Supplier Payment", "Employees Payment", "Sale", "Refund", "Deposit", "Withdrawal", "Other"], 
       required: true,
     },
     references: { 
         supplier: { type: mongoose.Schema.Types.ObjectId, ref: "Supplier", required: false }, // Only for supplier-related payments 
-        employee: { type: mongoose.Schema.Types.ObjectId, ref: "Employee", required: false }, // For salary-related payments 
+        employee: { type: mongoose.Schema.Types.ObjectId, ref: "Employees", required: false }, // For salary-related payments 
         customer: { type: mongoose.Schema.Types.ObjectId, ref: "Customer", required: false }, // For refund-related payments 
         purchase_orders: [ { purchase_id: { type: mongoose.Schema.Types.ObjectId, ref: "Purchase", required: false }, paidAmount: { type: Number, required: false } }, ], 
-        sale: { type: mongoose.Schema.Types.ObjectId, ref: "Sale", required: false }, // Optional reference to a sale if walk-in payment or regular sale 
+        sale: { type: mongoose.Schema.Types.ObjectId, ref: "SalesInvoice", required: false }, // Optional reference to a sale if walk-in payment or regular sale 
     }, 
     walkin_payment: { type: Boolean, default: false }, // Flag for walk-in customer payments
     description: { type: String ,required: true },
@@ -100,7 +100,7 @@ const paymentSchema = new mongoose.Schema({
   
   paymentSchema.pre('save', function(next) { 
     if (!this.payment_id) 
-        { this.payment_id = generateCustomId('PAY'); } 
+        { this.payment_id = generatePaymentId('PAY'); } 
     next(); });
 
 const Payment = mongoose.model("Payment", paymentSchema);

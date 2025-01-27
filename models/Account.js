@@ -29,7 +29,7 @@ const accountSchema = new mongoose.Schema({
   balance: { type: Number, default: 0 },
   account_owner_type: { 
     type: String,
-    enum: ["Company", "Customer", "Supplier", "Employee"],
+    enum: ["Company", "Customer", "Supplier", "Employees"],
     required: true,
     default:"Company"
   },

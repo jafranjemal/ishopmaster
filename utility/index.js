@@ -4,10 +4,32 @@ const NonSerializedStock = require('../models/NonSerializedStock');
 const Notification = require('../models/Notification');
 const sendNotification = require('../server');
  
- const generateCustomId = (prefix) => {
-  const timestamp = new Date().getTime();
-  const randomNum = Math.floor(Math.random() * 100000);
-  return `${prefix}-${timestamp}${randomNum}`;
+/**
+ * Generates a unique payment ID with specified format: PREFIX-YYYYMMDD-HHMMSS-XXXXX
+ * @param {string} prefix - Payment type prefix (e.g., 'PAY', 'INV')
+ * @returns {string} Formatted payment ID
+ * @throws {Error} If prefix is invalid
+ */
+const generatePaymentId = (prefix) => {
+  // Validate prefix
+  if (!prefix || typeof prefix !== 'string' || prefix.length < 2) {
+    throw new Error('Invalid prefix: Must be a string of at least 2 characters');
+  }
+
+  // Get current date and time
+  const now = new Date();
+  
+  // Format date components
+  const date = now.toISOString().split('T')[0].replace(/-/g, ''); // YYYYMMDD
+  const time = now.toTimeString().split(' ')[0].replace(/:/g, ''); // HHMMSS
+  
+  // Generate random number with padding
+  const randomNum = Math.floor(Math.random() * 100000)
+    .toString()
+    .padStart(5, '0'); // XXXXX
+
+  // Combine components
+  return `${prefix.toUpperCase()}-${date}-${time}-${randomNum}`;
 };
 
 
@@ -61,6 +83,6 @@ async function checkStockLevels() {
  
 
 module.exports = {
-    generateCustomId,
+  generatePaymentId,
     checkStockLevels
 }
