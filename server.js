@@ -141,7 +141,9 @@ process.on('uncaughtException', (err) => {
   process.exit(1);
 });
 
+const dbType = process.env.NODE_ENV === 'production' ? 'Cloud' : 'Local';
 
-app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT} in ${process.env.NODE_ENV} environment with ${dbType} database`));
+//app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
 io.listen(4000);
 module.exports = {sendNotification};
