@@ -6,7 +6,7 @@ var cors = require("cors");
 const cron = require('node-cron');
 const socketIo = require("socket.io");
 require('dotenv').config();
-const errorHandler = require('./middleware/errorHandler');
+ 
 const { seedDatabase } = require('./seed');
 const app = express();
 const server = http.createServer(app);
@@ -48,6 +48,7 @@ const shiftsRoutes = require("./routes/shiftRoutes");
 const permissionRoutes = require('./routes/permissionRoutes');
 const authRoutes = require('./routes/authRoutes');
 const roleRoutes = require('./routes/roleRoutes');
+const errorHandler = require('./middleware/errorHandler');
 
 
 
@@ -141,6 +142,7 @@ process.on('uncaughtException', (err) => {
   process.exit(1);
 });
 
+ 
 const dbType = process.env.NODE_ENV === 'production' ? 'Cloud' : 'Local';
 
 app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT} in ${process.env.NODE_ENV} environment with ${dbType} database`));

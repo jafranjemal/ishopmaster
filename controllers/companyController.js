@@ -3,10 +3,18 @@
 const Company = require("../models/Company"); // Import the Company model
 const Transaction = require("../models/Transaction");
 const Account = require("../models/Account");
+const { ApiError } = require("../utility/ApiError");
 
 // Create a new company
-exports.createCompany = async (req, res) => {
+exports.createCompany = async (req, res, next) => {
   try {
+    const existingCompany = await Company.countDocuments();
+    
+    if (existingCompany > 0) {
+      throw new ApiError(400, 'Only one company is allowed in the system');
+    }
+
+
     const { company_name, company_type, contact_person, email, phone_number, address, tax_id, registration_number } = req.body;
 
     const newCompany = new Company({
@@ -27,6 +35,7 @@ exports.createCompany = async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ message: "Error creating company", error });
+    next(error)
   }
 };
 
@@ -138,12 +147,8 @@ exports.getCompanyProfile_old = async (req, res) => {
   
       // Construct the response data
       const profileData = {
-        company_name: company.company_name,
-        company_type: company.company_type,
-        email: company.email,
-        phone: company.phone,
-        address: company.address,
-        website: company.website,
+        ...company.toObject(),
+      
         account_balance: account ? account.balance : null, // Null if no account
         total_revenue: totalRevenueAmount,
         total_expenses: totalExpensesAmount,

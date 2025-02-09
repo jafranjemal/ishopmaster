@@ -1,3 +1,4 @@
+ 
 const Account = require("../models/Account");
 const Employees = require("../models/Employee");
  
@@ -25,7 +26,7 @@ exports.createEmployee = async (req, res, next) => {
   
       // Create the employee account for salary tracking
       const employeeAccount = new Account({
-        account_name: `${name}'s Salary Account (${employee.employee_id})`, // Dynamic account name
+        account_name: `${name}'s Salary Account (${employee?.employee_id})`, // Dynamic account name
         account_type: "Salary", // This could be any other account type depending on your use case
         account_owner_type: "Employees",
         related_party_id: employee._id, // Linking to the Employees's ID
@@ -33,6 +34,7 @@ exports.createEmployee = async (req, res, next) => {
         description: `Salary account for employee ${name}`,
       });
   
+      console.log("employeeAccount",employeeAccount)
       await employeeAccount.save();
   
       // Link the employee account to the employee record (optional)

@@ -4,7 +4,39 @@ const User = require('../models/User');
 const bcrypt = require('bcryptjs');
 const Permissions = require('../models/Permissions');
 const PermissionService = require('../services/PermissionService');
+const Company = require('../models/Company');
  
+const defaultCompanyData = {
+    company_name: 'iShop Master',
+    company_type: 'Retail',
+    contact_person: 'John Doe',
+    email: 'contact@ishopmaster.com',
+    phone_number: '+1234567890',
+    address: '123 Main Street, City, Country',
+    tax_id: 'TAX123456',
+    registration_number: 'REG123456',
+    isActive: true
+  };
+
+  const seedDefaultCompany = async () => {
+    try {
+      // Check if a company already exists
+     await Company.deleteMany({});
+     
+      
+  
+      // Create default company
+      const newCompany = new Company(defaultCompanyData);
+      await newCompany.save();
+  
+      console.log('Default company seeded successfully');
+    } catch (error) {
+      console.error('Error seeding default company:', error);
+      throw new ApiError(500, 'Error seeding default company: ' + error.message);
+    }
+  };
+
+
 const modulePermissions = {
     dashboard: ['view'],
     customers: ['view', 'create', 'edit', 'delete', 'export'],
@@ -134,15 +166,23 @@ const seedPermissionsAndRoles = async () => {
             const roleModules = Object.entries(modulePermissions)
               .filter(([module]) => shouldHaveAccess(role.name, module));
     
-            const permissionsToCreate = roleModules.flatMap(([module, actions]) => 
-              actions.map(action => ({
+            // const permissionsToCreate = roleModules.flatMap(([module, actions]) => 
+            //   actions.map(action => ({
+            //     module,
+            //     actions: [action],
+            //     isActive: true,
+            //     roleId: role._id,
+            //     name: `${module}_${action}`.toUpperCase()
+            //   }))
+            // );
+
+            const permissionsToCreate = roleModules.map(([module, actions]) => ({
                 module,
-                actions: [action],
+                actions,
                 isActive: true,
                 roleId: role._id,
-                name: `${module}_${action}`.toUpperCase()
-              }))
-            );
+                name: `${module}_${actions.join('_')}`.toUpperCase()
+              }));
     
             const createdPermissions = await Permissions.create(permissionsToCreate,);
             
@@ -263,4 +303,4 @@ const seedUsers = async () => {
 
 
  
-module.exports = { seedPermissionsAndRoles , seedRoles, roleSeeds , seedUsers, userSeeds};
+module.exports = { seedDefaultCompany, seedPermissionsAndRoles , seedRoles, roleSeeds , seedUsers, userSeeds};

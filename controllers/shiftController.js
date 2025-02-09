@@ -84,7 +84,7 @@ exports.getCurrentShift = async (req, res) => {
           status: 'active',
         });
       
-        console.log("current shift ", currentShift)
+       // console.log("current shift ", currentShift)
         if (currentShift) {
           const user = await User.findById(userId);
           
@@ -99,11 +99,13 @@ exports.getCurrentShift = async (req, res) => {
           };
       
           if (currentShift.sales && currentShift.sales.length > 0) {
-            const sales = await SalesInvoice.find({ invoice_id: { $in: currentShift.sales } });
+            const sales = await SalesInvoice.find({ invoice_id: { $in: currentShift.sales } })
+            .populate("customer")
+      .populate("items.item_id")
             result.sales = sales;
           }
       
-          console.log(result);
+          
           return res.status(200).json(result);
         } else {
           console.log("No active shift found for the user.");

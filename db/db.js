@@ -7,13 +7,11 @@ const mongoose = require('mongoose');
 
 const localUri = 'mongodb://localhost:27017/ishopmaster'
 const mongoUri = 'mongodb+srv://jafranjemal:jafran123@cluster0.yai9p.mongodb.net/ishopmaster?retryWrites=true&w=majority'
+const dbUri = process.env.NODE_ENV === 'production' ? mongoUri : localUri;
 
 const connectDB = async () => {
     try {
-        await mongoose.connect(mongoUri, {
-            useNewUrlParser: true,
-            useUnifiedTopology: true,
-        });
+        await mongoose.connect(dbUri );
         console.log('MongoDB Connected');
     } catch (err) {
         console.error('Database connection error:', err.message);

@@ -8,6 +8,7 @@ const itemSchema = new mongoose.Schema({
     itemName: { type: String, required: true },
     itemImage: { type: String, required: false },
     quantity: { type: Number, required: true },
+    discount: { type: Number, required: false , default:0},
     lastSellingPrice: { type: Number, required: false },
     price: { type: Number, required: true },
     totalPrice: { type: Number, required: true }, // Total price for the quantity sold
