@@ -84,5 +84,10 @@ const ItemSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
-
+ItemSchema.pre('save', function(next) {
+  if (this.isModified('itemName')) {
+    this.itemName = this.itemName.toUpperCase();
+  }
+  next();
+});
 module.exports = mongoose.model("Item", ItemSchema);

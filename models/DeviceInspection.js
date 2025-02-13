@@ -2,9 +2,9 @@ const mongoose = require('mongoose');
 
 const deviceInspectionSchema = new mongoose.Schema(
   {
-    repairOrder: {
+    deviceID: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'RepairOrder',
+      ref: 'Device',
       required: true, // Reference to the repair order
     },
     inspectionDate: {
@@ -13,7 +13,15 @@ const deviceInspectionSchema = new mongoose.Schema(
     },
     batteryCondition: {
       type: String, // E.g., "Good", "Replace", "Drained"
-      enum: ['Good', 'Replace', 'Drained', 'Needs Calibration', 'Not Tested'], // Possible values for battery condition
+      enum: ['Good', 'Replace', 'Drained', 'Needs Attention', 'Not Tested'], // Possible values for battery condition
+    },
+    homeButtonCondition: {
+      type: String, // E.g., "Good", "Replace", "Drained"
+      enum: ['Good', 'Needs Attention', 'Not Tested'], // Possible values for battery condition
+    },
+   fingerPrintCondition: {
+      type: String, // E.g., "Good", "Replace", "Drained"
+      enum: ['Good', 'Needs Attention', 'Not Tested'], // Possible values for battery condition
     },
     screenCondition: {
       type: String, // E.g., "Cracked", "Good", "Scratched", "Dead Pixels"
@@ -78,6 +86,9 @@ const deviceInspectionSchema = new mongoose.Schema(
     deviceNotes: {
       type: String, // Any additional notes for the inspection
     },
+    images:[
+
+    ],
     inspectedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Employees', // Reference to the employee who performed the inspection

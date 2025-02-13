@@ -249,82 +249,164 @@ const purchases = await Purchase.find({ 'supplier': id, 'payment_due_amount': { 
   }
 };
 
-// Update a purchase
 exports.updatePurchase = async (req, res) => {
   try {
-    const { id } = req.params;
-    const updatedData = req.body;
+    const { purchaseId } = req.params;
+    const purchaseData = req.body;
 
-    const purchase = await Purchase.findByIdAndUpdate(id, updatedData, {
-      new: true,
-    });
-
-    if (!purchase) {
-      return res.status(404).json({ message: "Purchase not found" });
+    const existingPurchase = await Purchase.findById(purchaseId);
+    if (!existingPurchase) {
+      return res.status(404).json({ message: 'Purchase not found' });
     }
 
-    // Update Stock
-    for (const item of updatedData.purchasedItems) {
-      const stockEntry = await Stock.findOne({
-        item_id: item.item_id,
-        batch_number: item.batch_number,
-      });
-
-      if (stockEntry) {
-        // Adjust stock quantities
-        stockEntry.available_qty += item.purchase_qty;
-        await stockEntry.save();
+    // Reverse stock changes
+    for (const item of existingPurchase.purchasedItems) {
+      if (item.isSerialized) {
+        await SerializedStock.deleteMany({ purchase_id: purchaseId });
       } else {
-        // Add new stock entry
-        await Stock.create({
+        await NonSerializedStock.deleteMany({ purchase_id: purchaseId });
+      }
+    }
+
+    // Reverse supplier account changes
+    const supplierAccount = await Account.findOne({
+      account_owner_type: "Supplier",
+      related_party_id: existingPurchase.supplier
+    });
+
+    if (!supplierAccount) {
+      return res.status(404).json({ message: 'Supplier account not found' });
+    }
+
+    supplierAccount.balance += existingPurchase.grand_total;
+    await supplierAccount.save();
+
+    // Update purchase data
+    const batchNo = `BATCH-${Date.now()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+    purchaseData.purchasedItems = purchaseData.purchasedItems.map((item) => {
+      if (item.isSerialized && item.serializedItems) {
+        item.serializedItems = item.serializedItems.map((itm) => ({
+          ...itm,
+          batch_number: batchNo,
+        }));
+      }
+      return {
+        ...item,
+        batch_number: batchNo,
+      };
+    });
+
+    const updatedPurchase = await Purchase.findByIdAndUpdate(purchaseId, purchaseData, { new: true });
+
+    // Update stock
+    for (const item of updatedPurchase.purchasedItems) {
+      if (item.isSerialized) {
+        for (const serializedItem of item.serializedItems) {
+          await SerializedStock.create({
+            item_id: item.item_id,
+            purchase_id: updatedPurchase._id,
+            serialNumber: serializedItem.serialNumber,
+            batch_number: item.batch_number,
+            purchaseDate: updatedPurchase.purchaseDate,
+            unitCost: serializedItem.unitCost,
+            sellingPrice: serializedItem.sellingPrice,
+            status: "Available",
+          });
+        }
+      } else {
+        await NonSerializedStock.create({
           item_id: item.item_id,
+          purchase_id: updatedPurchase._id,
           batch_number: item.batch_number,
-          purchase_date: purchase.purchase_date,
-          purchase_qty: item.purchase_qty,
-          available_qty: item.purchase_qty,
-          unit_cost: item.unit_cost,
-          selling_price: item.selling_price,
+          purchaseDate: updatedPurchase.purchaseDate,
+          purchaseQty: item.purchaseQty,
+          availableQty: item.purchaseQty,
+          unitCost: item.unitCost,
+          sellingPrice: item.sellingPrice,
+          unit: item.unit,
         });
       }
     }
 
-    res
-      .status(200)
-      .json({ message: "Purchase updated successfully", purchase });
+    // Update supplier account
+    supplierAccount.balance -= updatedPurchase.grand_total;
+    await supplierAccount.save();
+
+        // Remove transaction record
+        await Transaction.deleteOne({
+          account_id: supplierAccount._id,
+          amount: existingPurchase.grand_total * -1,
+          reason: `Purchase: ${existingPurchase.referenceNumber}`
+        });
+
+    // Record the transaction
+    const transaction = new Transaction({
+      account_id: supplierAccount._id,
+      amount: updatedPurchase.grand_total * -1,
+      transaction_type: "Withdrawal",
+      reason: `Purchase: ${updatedPurchase.referenceNumber}`,
+      transaction_date: new Date(),
+      balance_after_transaction: supplierAccount.balance,
+    });
+
+    await transaction.save();
+
+    res.status(200).json({ message: "Purchase updated successfully", purchase: updatedPurchase });
   } catch (error) {
+    console.error("Error updating purchase:", error);
     res.status(500).json({ message: "Error updating purchase", error });
   }
 };
 
-// Delete a purchase
 exports.deletePurchase = async (req, res) => {
   try {
-    const { id } = req.params;
-    const purchase = await Purchase.findByIdAndDelete(id);
+    const { purchaseId } = req.params;
 
-    if (!purchase) {
-      return res.status(404).json({ message: "Purchase not found" });
+    const existingPurchase = await Purchase.findById(purchaseId);
+    if (!existingPurchase) {
+      return res.status(404).json({ message: 'Purchase not found' });
     }
 
-    // Revert stock changes
-    for (const item of purchase.purchasedItems) {
-      const stockEntry = await Stock.findOne({
-        item_id: item.item_id,
-        batch_number: item.batch_number,
-      });
+    // Check payment status
+    if (existingPurchase.payment_status !== 'Not Paid') {
+      return res.status(400).json({ message: 'Only purchases with "Not Paid" status can be deleted' });
+    }
 
-      if (stockEntry) {
-        stockEntry.available_qty -= item.purchase_qty;
-        if (stockEntry.available_qty <= 0) {
-          await stockEntry.remove(); // Remove stock entry if quantity becomes zero
-        } else {
-          await stockEntry.save();
-        }
+    // Reverse stock changes
+    for (const item of existingPurchase.purchasedItems) {
+      if (item.isSerialized) {
+        await SerializedStock.deleteMany({ purchase_id: purchaseId });
+      } else {
+        await NonSerializedStock.deleteMany({ purchase_id: purchaseId });
       }
     }
 
+    // Reverse supplier account changes
+    const supplierAccount = await Account.findOne({
+      account_owner_type: "Supplier",
+      related_party_id: existingPurchase.supplier
+    });
+
+    if (!supplierAccount) {
+      return res.status(404).json({ message: 'Supplier account not found' });
+    }
+
+    supplierAccount.balance += existingPurchase.grand_total;
+    await supplierAccount.save();
+
+    // Delete purchase
+    await Purchase.findByIdAndDelete(purchaseId);
+
+    // Remove transaction record
+    await Transaction.deleteOne({
+      account_id: supplierAccount._id,
+      amount: existingPurchase.grand_total * -1,
+      reason: `Purchase: ${existingPurchase.referenceNumber}`
+    });
+
     res.status(200).json({ message: "Purchase deleted successfully" });
   } catch (error) {
+    console.error("Error deleting purchase:", error);
     res.status(500).json({ message: "Error deleting purchase", error });
   }
 };

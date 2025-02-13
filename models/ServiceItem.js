@@ -4,68 +4,94 @@ const { Schema } = mongoose;
 // Service Item Schema
 const serviceItemSchema = new Schema(
   {
-    serviceItemID: {
-      type: String,
-      required: true,
-      unique: true, // Unique identifier for the service item
-    },
     name: {
       type: String,
-      required: true, // Name of the service (e.g., "iPhone 15 Series Display Replacement")
+      required: true, // General name of the service (e.g., "Display Replacement")
     },
     description: {
       type: String,
       required: true, // Detailed description of the service
     },
-    price: {
-      type: Number,
-      required: true, // Total price of the service (may include service charge and labor)
-    },
-    laborCharge: {
-      type: Number,
-      required: true, // Labor charge specific to this service item
-    },
-    duration: {
+    icon: {
       type: String,
-      required: true, // Estimated time required to complete the service (e.g., "2 hours")
+      required: true, // Detailed description of the service
     },
-    associatedParts: [
+    brand: {
+      type: Schema.Types.ObjectId,
+      ref: "Brand", // Reference to Brand model (Apple, Samsung, etc.)
+      required: true,
+    },
+    modelVariants: [
       {
-        partName: {
+        modelId: {
+          type: Schema.Types.ObjectId,
+          ref: "PhoneModel", // Reference to PhoneModel schema
+          required: true,
+        },
+        modelName: {
           type: String,
-          required: true, // Name of the part (e.g., display, adhesive)
+          required: true, // Model name (e.g., "iPhone 14 Pro Max")
         },
-        partCost: {
+        warranty: {
           type: Number,
-          required: true, // Cost of the part
+          default: 0, // Model name (e.g., "iPhone 14 Pro Max")
         },
-        quantity: {
+        warrantyUnit: {
+          type: String,
+          default: "Days", // Model name (e.g., "iPhone 14 Pro Max")
+        },
+        price: {
           type: Number,
-          required: true, // Quantity required for the service
+          required: true, // Price for this model-specific service
         },
+        duration: {
+          type: String,
+          required: true, // Duration for this model (e.g., "2 hours")
+        },
+        laborCharge: {
+          type: Number,
+          required: true, // Labor charge specific to this model
+        },
+        commission: {
+          type: Number,
+          required: false, // Labor charge specific to this model
+        },
+        
+        associatedParts: [
+          {
+            partId: {
+              type: String,
+              // Part required (e.g., "Display", "Adhesive")
+            },
+            partName: {
+              type: String,
+              // Part required (e.g., "Display", "Adhesive")
+            },
+            partCost: {
+              type: Number,
+              // Cost of the part
+            },
+            quantity: {
+              type: Number,
+              // Quantity needed
+            },
+          },
+        ],
       },
     ],
     category: {
       type: String,
-      required: true, // Type of service (e.g., "Display Replacement", "Battery Replacement")
-    },
-    createdAt: {
-      type: Date,
-      default: Date.now, // Date and time when the service item was created
-    },
-    updatedAt: {
-      type: Date,
-      default: Date.now, // Last time the service item was updated
+      required: true, // Type of service (e.g., "Phone Repair", "Tablet Repair")
     },
     status: {
       type: String,
-      enum: ['Active', 'Inactive'],
-      default: 'Active', // Service item status (Active/Inactive)
+      enum: ["Active", "Inactive"],
+      default: "Active", // Status of the service
     },
   },
   {
-    timestamps: true, // Automatically add createdAt and updatedAt
+    timestamps: true, // Automatically adds createdAt and updatedAt timestamps
   }
 );
 
-module.exports = mongoose.model('ServiceItem', serviceItemSchema);
+module.exports = mongoose.model("ServiceItem", serviceItemSchema);

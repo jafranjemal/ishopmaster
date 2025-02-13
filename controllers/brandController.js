@@ -1,12 +1,15 @@
 const Brand = require("../models/Brand");
-
+const brandService = require('../services/BrandService');
 // Create a new brand
 exports.createBrand = async (req, res) => {
   try {
-    const { name, description, image } = req.body;
-    const newBrand = new Brand({ name, description, image });
-    await newBrand.save();
-    res.status(201).json({ success: true, message: "Brand created successfully", data: newBrand });
+    const brandData = req.body;
+    const createdBrand = await brandService.createBrand(brandData);
+    res.status(201).json({
+      success: true,
+      message: 'Brand(s) created successfully',
+      data: createdBrand
+    });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
   }

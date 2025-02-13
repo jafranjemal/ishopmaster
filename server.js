@@ -49,7 +49,9 @@ const permissionRoutes = require('./routes/permissionRoutes');
 const authRoutes = require('./routes/authRoutes');
 const roleRoutes = require('./routes/roleRoutes');
 const errorHandler = require('./middleware/errorHandler');
-
+const ticketRoutes = require("./routes/ticketRoutes");
+const phoneModelRoutes = require("./routes/phoneModelRoutes");
+const serviceItemRoutes = require("./routes/serviceItemRoutes");
 
 
 app.use('/api/items', productRoutes);
@@ -72,6 +74,12 @@ app.use("/api/shifts", shiftsRoutes);
 app.use('/api/permissions', permissionRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/role', roleRoutes);
+app.use("/api/tickets", ticketRoutes);
+app.use("/api/phone-models", phoneModelRoutes);
+app.use("/api/service-items", serviceItemRoutes);
+
+
+
 // Schedule the task to run every hour
 //cron.schedule('0 * * * *', checkStockLevels);
 // Schedule the task to run every second 
