@@ -94,4 +94,16 @@ const serviceItemSchema = new Schema(
   }
 );
 
+serviceItemSchema.virtual('priceRange').get(function() {
+  if (!this.modelVariants || this.modelVariants.length === 0) {
+    return 'N/A';
+  }
+
+  const prices = this.modelVariants.map(variant => variant.price);
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+
+  return minPrice === maxPrice ? `${Number(minPrice).toLocaleString()}` : `${Number(minPrice).toLocaleString()} - ${Number(maxPrice).toLocaleString(0)}`;
+});
+
 module.exports = mongoose.model("ServiceItem", serviceItemSchema);

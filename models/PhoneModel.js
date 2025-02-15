@@ -13,10 +13,10 @@ const phoneModelSchema = new mongoose.Schema({
   },
   image_url: {
     type: String,
-    required: true,
+    
   },
 });
 
+phoneModelSchema.index({ model_name: 1, brandId: 1 }, { unique: true });
 const PhoneModel = mongoose.model('PhoneModel', phoneModelSchema);
-
 module.exports = PhoneModel;

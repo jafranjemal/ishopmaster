@@ -18,7 +18,7 @@ exports.createBrand = async (req, res) => {
 // Get all brands
 exports.getBrands = async (req, res) => {
   try {
-    const brands = await Brand.find().sort({ created_at: -1 });
+    const brands = await Brand.find().sort({ _id: -1 });
     res.status(200).json({ success: true, data: brands });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -40,12 +40,15 @@ exports.getBrandById = async (req, res) => {
 exports.updateBrand = async (req, res) => {
   try {
     const { name, description, image } = req.body;
+    console.log(req.params.id)
+    console.log(req.body)
     const brand = await Brand.findByIdAndUpdate(
       req.params.id,
       { name, description, image, updated_at: Date.now() },
       { new: true }
     );
     if (!brand) return res.status(404).json({ success: false, message: "Brand not found" });
+    console.log({brand})
     res.status(200).json({ success: true, message: "Brand updated successfully", data: brand });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });

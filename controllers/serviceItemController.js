@@ -25,7 +25,11 @@ exports.getAllServiceItems = async (req, res) => {
       .populate("brand", "name image") // Get brand details
       .populate("modelVariants.modelId", "model_name image_url"); // Get model details
 
-    res.status(200).json({ message: "Service items retrieved!", data: serviceItems });
+      const serviceItemsWithPriceRange = serviceItems.map(item => ({
+        ...item.toObject(),
+        priceRange: item.priceRange
+      }));
+    res.status(200).json({ message: "Service items retrieved!", data: serviceItemsWithPriceRange });
   } catch (error) {
     res.status(500).json({ message: "Server error!", error: error.message });
   }
