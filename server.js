@@ -52,6 +52,8 @@ const errorHandler = require('./middleware/errorHandler');
 const ticketRoutes = require("./routes/ticketRoutes");
 const phoneModelRoutes = require("./routes/phoneModelRoutes");
 const serviceItemRoutes = require("./routes/serviceItemRoutes");
+const barcodeSettingsRoutes = require("./routes/barcodeSettingsRoutes");
+const BwipJs = require('bwip-js');
 
 
 app.use('/api/items', productRoutes);
@@ -77,8 +79,34 @@ app.use('/api/role', roleRoutes);
 app.use("/api/tickets", ticketRoutes);
 app.use("/api/phone-models", phoneModelRoutes);
 app.use("/api/service-items", serviceItemRoutes);
+app.use('/api/barcode-settings', barcodeSettingsRoutes);
 
+app.post('/api/print-barcodes', async (req, res) => {
+  const { items } = req.body;
 
+  try {
+    const barcodes = [];
+    for (const item of items) {
+      const barcodeBuffer = await BwipJs.toBuffer({
+        bcid: 'code128', // Barcode type
+        text: item.barcode, // Text to encode
+        scale: 3, // 3x scaling factor
+        height: 10, // Bar height, in millimeters
+        includetext: true, // Show human-readable text
+        textxalign: 'center', // Always good to set this
+      });
+      barcodes.push({ sellingPrice: item.lastSellingPrice, itemName:item.itemName,  barcode: item.barcode, buffer: barcodeBuffer.toString('base64') });
+    }
+    res.json({ success: true, barcodes });
+  } catch (error) {
+    console.error('Error generating barcodes:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error generating barcodes',
+      error: error.message
+    });
+  }
+});
 
 // Schedule the task to run every hour
 //cron.schedule('0 * * * *', checkStockLevels);
