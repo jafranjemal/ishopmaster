@@ -266,6 +266,7 @@ const userSeeds = [
 const seedUsers = async () => {
   try {
     // Get roles
+    
     const roles = await Role.find();
     const roleMap = roles.reduce((acc, role) => {
         acc[role.name] = role._id;

@@ -19,13 +19,16 @@ const deviceSchema = new mongoose.Schema({
     
  
  
-  brand: {
+  brandId: {
     type: String,
+    ref: 'Brand',
     required: true
   },
-  model: {
+  modelId: {
     type: String,
+    ref: 'PhoneModel',
     required: true
+    
   },
  
   owner: {

@@ -7,6 +7,11 @@ const deviceInspectionSchema = new mongoose.Schema(
       ref: 'Device',
       required: true, // Reference to the repair order
     },
+    ticketId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Ticket',
+       // Reference to the repair order
+    },
     inspectionDate: {
       type: Date,
       default: Date.now, // Date of inspection

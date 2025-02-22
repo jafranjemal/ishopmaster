@@ -54,6 +54,9 @@ const phoneModelRoutes = require("./routes/phoneModelRoutes");
 const serviceItemRoutes = require("./routes/serviceItemRoutes");
 const barcodeSettingsRoutes = require("./routes/barcodeSettingsRoutes");
 const BwipJs = require('bwip-js');
+const deviceRoutes = require("./routes/deviceRoutes");
+const deviceInspectionRoutes = require("./routes/deviceInspectionRoutes");
+const reportedIssueRoutes = require("./routes/reportedIssueRoutes");
 
 
 app.use('/api/items', productRoutes);
@@ -80,6 +83,10 @@ app.use("/api/tickets", ticketRoutes);
 app.use("/api/phone-models", phoneModelRoutes);
 app.use("/api/service-items", serviceItemRoutes);
 app.use('/api/barcode-settings', barcodeSettingsRoutes);
+app.use("/api/devices", deviceRoutes);
+app.use("/api/device-inspections", deviceInspectionRoutes);
+app.use("/api/reported-issues", reportedIssueRoutes);
+
 
 app.post('/api/print-barcodes', async (req, res) => {
   const { items } = req.body;
