@@ -573,7 +573,7 @@ async function createSalesInvoice(
   notes,
   invoice_type,
   serviceItems,
-  ticketId
+  ticketId=null
 ) {
   const itemTotal = items.reduce((total, item) => total + item.totalPrice, 0);
   const serviceTotal = serviceItems && serviceItems.reduce((total, item) => total + item.total, 0);
@@ -803,7 +803,7 @@ exports.createSalesInvoice = async (req, res) => {
 
     invoice_type="Sale",
 serviceItems=[],
-ticketId=""
+ticketId=null
   } = req.body;
 
   try {
