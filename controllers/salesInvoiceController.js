@@ -14,32 +14,31 @@ async function updateInventory_old(items) {
   const nonSerializedItems = items.filter((item) => !item.isSerialized);
 
   // Update serialized items in bulk
-  
+
   const serializedUpdates = [];
-      
+
   for (const item of serializedItems) {
     // Validate serial numbers
     if (!Array.isArray(item.serialNumbers)) {
-      throw new ApiError(400, 'Invalid serial numbers format');
+      throw new ApiError(400, "Invalid serial numbers format");
     }
 
     // Create individual updates for each serial number
-    item.serialNumbers.forEach(serialNumber => {
+    item.serialNumbers.forEach((serialNumber) => {
       serializedUpdates.push({
         updateOne: {
           filter: { serialNumber: serialNumber },
-          update: { 
-            $set: { 
-              status: "Sold", 
-              sold_date: new Date()  
-            }
-          }
-        }
+          update: {
+            $set: {
+              status: "Sold",
+              sold_date: new Date(),
+            },
+          },
+        },
       });
     });
   }
 
- 
   // Update non-serialized items in bulk
   const nonSerializedUpdates = nonSerializedItems.map((item) => ({
     updateOne: {
@@ -72,7 +71,8 @@ async function updateInventory(items) {
     const serializedUpdates = prepareSerializedUpdates(serializedItems);
 
     // Prepare non-serialized items for bulk update
-    const nonSerializedUpdates = prepareNonSerializedUpdates(nonSerializedItems);
+    const nonSerializedUpdates =
+      prepareNonSerializedUpdates(nonSerializedItems);
 
     // Perform bulk updates
     await performBulkUpdates(serializedUpdates, nonSerializedUpdates);
@@ -96,7 +96,7 @@ function separateItems(items) {
 function prepareSerializedUpdates(serializedItems) {
   return serializedItems.flatMap((item) => {
     if (!Array.isArray(item.serialNumbers)) {
-      throw new ApiError(400, 'Invalid serial numbers format');
+      throw new ApiError(400, "Invalid serial numbers format");
     }
     return item.serialNumbers.map((serialNumber) => ({
       updateOne: {
@@ -135,9 +135,8 @@ async function performBulkUpdates(serializedUpdates, nonSerializedUpdates) {
   ]);
 }
 
-
 async function processPayment(invoiceId, paymentDetails) {
-  console.log("processPayment start...");
+  console.log("processPayment start...", paymentDetails);
 
   const invoice = await SalesInvoice.findOne({
     invoice_id: invoiceId,
@@ -407,24 +406,28 @@ async function handleCreditSale(customerId, totalAmount, invoice_id) {
   }
   console.log({ customerAccount });
   console.log("handleCreditSale end...");
-}
+}   
 
 async function paymentProcessFromAccount(customerId, totalAmount, invoice_id) {
   console.log("paymentProcessFromAccount start...");
+  
   const invoice = await SalesInvoice.findOne({
     invoice_id: invoice_id,
   });
+
   if (!invoice) throw new Error("Invoice not found");
 
   const companyAccount = await Account.findOne({
     account_owner_type: "Company",
   });
+
   if (!companyAccount) throw new Error("companyAccount account not found");
 
   const customerAccount = await Account.findOne({
     related_party_id: customerId,
     account_owner_type: "Customer",
   });
+
   if (!customerAccount) throw new Error("Customer account not found");
 
   if (customerAccount.balance >= totalAmount) {
@@ -447,6 +450,7 @@ async function paymentProcessFromAccount(customerId, totalAmount, invoice_id) {
       reason: `Payment Recover from Customer Account for Invoice ${invoice.invoice_id} via ${method}`,
       balance_after_transaction: companyAccount.balance + totalAmount,
     });
+
     await transaction.save();
 
     // Update company account balance
@@ -522,7 +526,8 @@ async function paymentProcessFromAccount(customerId, totalAmount, invoice_id) {
         amount: customerAccount.balance,
         transaction_type: "Deposit",
         reason: `Payment re-transfer from customer account to company account, for this invoice  ${invoice_id}`,
-        balance_after_transaction: companyAccount.balance - customerAccount.balance,
+        balance_after_transaction:
+          companyAccount.balance - customerAccount.balance,
       });
 
       await companytransaction.save();
@@ -566,29 +571,32 @@ async function logSaleInShift(shiftId, invoiceId, totalAmount) {
 async function createSalesInvoice(
   customerId,
   items,
-  payment_methods=[],
+  payment_methods = [],
   transactionType,
   userId,
   shiftId,
   notes,
   invoice_type,
   serviceItems,
-  ticketId=null
+  ticketId = null
 ) {
   const itemTotal = items.reduce((total, item) => total + item.totalPrice, 0);
-  const serviceTotal = serviceItems && serviceItems.reduce((total, item) => total + item.total, 0);
+  const serviceTotal =
+    serviceItems && serviceItems.reduce((total, item) => total + item.total, 0);
   const total_paid_amount = payment_methods.reduce(
     (total, item) => total + item.amount,
     0
   );
 
-  const totalAmount = itemTotal+serviceTotal
+  const totalAmount = itemTotal + serviceTotal;
+  console.log("totalAmount - ", totalAmount);
+  console.log("total_paid_amount - ", total_paid_amount);
   // Create the sales invoice
   const invoice = new SalesInvoice({
     customer: customerId,
     items,
-    total_amount: itemTotal+serviceTotal,
-    total_paid_amount,
+    total_amount: totalAmount,
+    total_paid_amount: total_paid_amount,
     payment_methods: payment_methods,
     transaction_type: transactionType,
     user_id: userId,
@@ -597,17 +605,17 @@ async function createSalesInvoice(
 
     invoice_type,
     serviceItems,
-    ticketId
+    ticketId,
   });
 
-  if(invoice_type ==="Service"){
+  if (invoice_type === "Service") {
+    const ticket = await Ticket.findById(ticketId);
+    if (!ticket) throw Error("Ticket not found");
 
-    const ticket = await Ticket.findById(ticketId)
-    if(!ticket) throw Error("Ticket not found")
-    
-    ticket.invoiceId = invoice._id
-    await ticket.save()
-    invoice.ticketId = ticket._id
+    ticket.invoiceId = invoice._id;
+    await ticket.save();
+
+    invoice.ticketId = ticket._id;
   }
 
   await invoice.save();
@@ -622,12 +630,9 @@ async function createSalesInvoice(
   // Update Sales shift
   await logSaleInShift(shiftId, invoice.invoice_id, totalAmount);
 
-  
   const lastInvoice = await SalesInvoice.findOne({
     _id: invoice._id,
   });
-
-
 
   return lastInvoice;
 }
@@ -643,26 +648,33 @@ async function createReversalSalesInvoice(
   serviceItems,
   ticketId
 ) {
-
   try {
-    console.log('createReversalSalesInvoice() started...\n')
-    console.log('#######################\n')
-      console.log( "invoice_type",invoice_type)
-      console.log("serviceItems", serviceItems)
-        console.log("ticketId",ticketId)
-        
-        console.log('#######################\n')
+    console.log("createReversalSalesInvoice() started...\n");
+    console.log("#######################\n");
+    console.log("invoice_type", invoice_type);
+    console.log("paymentMethods", paymentMethods);
+    console.log("serviceItems", serviceItems);
+    console.log("ticketId", ticketId);
+
+    console.log("#######################\n");
     const itemTotal = items.reduce((total, item) => total + item.totalPrice, 0);
     const serviceItemsArray = Array.isArray(serviceItems) ? serviceItems : [];
-    const serviceTotal = serviceItemsArray.reduce((total, item) => total + item.total, 0);
+    const serviceTotal = serviceItemsArray.reduce(
+      (total, item) => total + item.total,
+      0
+    );
     //const serviceTotal = serviceItems && serviceItems.reduce((total, item) => total + item.total, 0);
-    const totalAmount = itemTotal+serviceTotal
+    const totalAmount = itemTotal + serviceTotal;
     const total_paid_amount = paymentMethods.reduce(
       (total, item) => total + item.amount,
       0
     );
-  
-  
+
+    console.log("#######################\n");
+    console.log("createReversalSalesInvoice()-> totalAmount", totalAmount);
+    console.log("createReversalSalesInvoice()->  total_paid_amount", total_paid_amount);
+
+    console.log("#######################\n");
     // Create the sales invoice
     const invoice = new SalesInvoice({
       customer: customerId,
@@ -674,14 +686,14 @@ async function createReversalSalesInvoice(
       user_id: userId,
       shift_id: shiftId,
       notes,
-      
+
       invoice_type,
       serviceItems,
-      ticketId
+      ticketId,
     });
-  
+
     await invoice.save();
-  
+
     // Handle payments sales
     // await handleCashSale(totalAmount, invoice.invoice_id, paymentMethods);
     await paymentProcessFromAccount(
@@ -689,26 +701,24 @@ async function createReversalSalesInvoice(
       invoice.total_amount,
       invoice.invoice_id
     );
-  
+
     // Update inventory
     await updateInventory(items);
-  
+
     // Update Sales shift
     await logSaleInShift(shiftId, invoice.invoice_id, totalAmount);
-  
+
     const lastInvoice = await SalesInvoice.findOne({
       _id: invoice._id,
     });
-  
+
+    console.log("createReversalSalesInvoice() ended...\n");
     return lastInvoice;
-    console.log('createReversalSalesInvoice() ended...\n')
+  } catch (error) {
+    // Handle errors
+    console.log("createReversalSalesInvoice() failed", error);
+    throw error;
   }
-  catch (error) {
-  // Handle errors
-  console.log('createReversalSalesInvoice() failed', error);
-  throw error;
-}
- 
 }
 
 /**
@@ -720,26 +730,31 @@ async function createReversalSalesInvoice(
  */
 async function settleDuePayment(existingInvoice, updates) {
   try {
+    console.log('settleDuePayment started..')
     // Validate input data
     if (!existingInvoice || !updates) {
       throw new Error("Invalid input data");
     }
 
     // Check if company account exists
-    const companyAccount = await Account.findOne({ account_owner_type: "Company" });
+    const companyAccount = await Account.findOne({
+      account_owner_type: "Company",
+    });
     if (!companyAccount) {
       throw new Error("Company account not found");
     }
 
     // Calculate settlement amount
-    const settlementAmount = updates.total_paid_amount - existingInvoice.total_paid_amount;
+    const settlementAmount =
+      updates.total_paid_amount - existingInvoice.total_paid_amount;
 
     // Get new payment methods
     const newPaymentMethods = updates.payment_methods.filter(
       (newMethod) =>
         !existingInvoice.payment_methods.some(
           (existingMethod) =>
-            existingMethod.method === newMethod.method && existingMethod.amount === newMethod.amount
+            existingMethod.method === newMethod.method &&
+            existingMethod.amount === newMethod.amount
         )
     );
 
@@ -757,7 +772,8 @@ async function settleDuePayment(existingInvoice, updates) {
         transaction_type: "Deposit",
         reason: `Due Payment Settled for Invoice ${existingInvoice.invoice_id} via ${method}`,
         description: `Settling due payment of ${paymentAmountToApply} for invoice ${existingInvoice.invoice_id} using ${method}`,
-        balance_after_transaction: companyAccount.balance + paymentAmountToApply,
+        balance_after_transaction:
+          companyAccount.balance + paymentAmountToApply,
       });
       await transaction.save();
 
@@ -766,14 +782,18 @@ async function settleDuePayment(existingInvoice, updates) {
       await companyAccount.save();
 
       // Update invoice status
-      existingInvoice.status = settlementAmount+existingInvoice.total_paid_amount  >= existingInvoice.total_amount ? "Paid" : "Partially paid";
+      existingInvoice.status =
+        settlementAmount + existingInvoice.total_paid_amount >=
+        existingInvoice.total_amount
+          ? "Paid"
+          : "Partially paid";
       existingInvoice.total_paid_amount += paymentAmountToApply;
       await existingInvoice.save();
-    
-   
 
       // Log settlement process
-      console.log(`Due payment settled for invoice ${existingInvoice.invoice_id} using ${method}`);
+      console.log(
+        `Due payment settled for invoice ${existingInvoice.invoice_id} using ${method}`
+      );
     }
 
     return {
@@ -789,6 +809,29 @@ async function settleDuePayment(existingInvoice, updates) {
   }
 }
 
+// Helper function to check if items are equal based on specific fields
+function areItemsEqual(updates, existing) {
+  const fieldsToCheck = [
+    'barcode',
+    'discount',
+    'isSerialized',
+    'itemImage',
+    'itemName',
+    'item_id',
+    'lastSellingPrice',
+    'price',
+    'quantity',
+    'serialNumbers',
+    'totalPrice',
+    '_id',
+  ];
+
+  return updates.every(update => {
+    const existingItem = existing.find(item => item.barcode === update.barcode);
+    return existingItem && fieldsToCheck.every(field => update[field] === existingItem[field]);
+  });
+}
+
 // Create a new sales invoice
 exports.createSalesInvoice = async (req, res) => {
   const {
@@ -798,12 +841,11 @@ exports.createSalesInvoice = async (req, res) => {
     transaction_type,
     user_id,
     shift_id,
-    notes="",
+    notes = "",
 
-
-    invoice_type="Sale",
-serviceItems=[],
-ticketId=null
+    invoice_type = "Sale",
+    serviceItems = [],
+    ticketId = null,
   } = req.body;
 
   try {
@@ -821,6 +863,7 @@ ticketId=null
     );
     res.status(201).json(invoice);
   } catch (error) {
+    console.error("createSalesInvoice () failed", error);
     res.status(400).json({ message: error.message });
   }
 };
@@ -890,16 +933,14 @@ exports.updateSalesInvoice = async (req, res) => {
     user_id,
     shift_id,
     invoice_type,
-    notes="",
-  ticketId
+    notes = "",
+    ticketId,
   } = req.body;
 
   console.log(`Request received to update invoice with ID: ${id}`);
   console.log("Updates received:", updates);
 
   try {
-
-
     // Step 1: Find the existing invoice
     const existingInvoice = await SalesInvoice.findById(id)
       .populate("customer")
@@ -910,109 +951,100 @@ exports.updateSalesInvoice = async (req, res) => {
       return res.status(404).json({ message: "Invoice not found" });
     }
 
-    console.log("Existing invoice found:", existingInvoice);
+    console.log("Existing invoice found:", existingInvoice._id);
 
-    if(existingInvoice.status ==="Reversed"){
-      return res.status(404).json({ message: "Invoice already Reversed, Cannot modify again" });
+    if (existingInvoice.status === "Reversed") {
+      return res
+        .status(404)
+        .json({ message: "Invoice already Reversed, Cannot modify again" });
     }
 
-    const oldDue = existingInvoice.total_amount - existingInvoice.total_paid_amount;
+    const oldDue =
+      existingInvoice.total_amount - existingInvoice.total_paid_amount;
     const updatedDue = updates.total_amount - updates.total_paid_amount;
-  
+
     if (oldDue > updatedDue) {
-     
-    const result = await settleDuePayment(existingInvoice, updates);
-    return res.status(200).json(result);
+      const result = await settleDuePayment(existingInvoice, updates);
+      return res.status(200).json(result);
     }
 
- // Step 2: Identify transaction_type
-    if(transaction_type === "Sale"){
-
+    // Step 2: Identify transaction_type
+    if (transaction_type === "Sale") {
       const hasCustomerChange =
-      updates.customer &&
-      updates.customer.toString() !==
-        existingInvoice.customer.customer_id.toString();
-    const hasItemChanges =
-      updates.items &&
-      JSON.stringify(updates.items) !== JSON.stringify(existingInvoice.items);
+        updates.customer &&
+        updates.customer.toString() !== existingInvoice.customer._id.toString();
+      // const hasItemChanges =
+      //   updates.items &&
+      //   JSON.stringify(updates.items) !== JSON.stringify(existingInvoice.items);
+        
+      const hasItemChanges = updates.items && !areItemsEqual(updates.items, existingInvoice.items);
+      console.log("Has customer change?", hasCustomerChange);
+      console.log("Has item changes?", hasItemChanges);
 
-    console.log("Has customer change?", hasCustomerChange);
-    console.log("Has item changes?", hasItemChanges);
+      if (hasCustomerChange || hasItemChanges) {
+        console.log(
+          "Financial changes detected. Reversing and re-entering invoice."
+        );
 
-    if (hasCustomerChange || hasItemChanges) {
-      console.log(
-        "Financial changes detected. Reversing and re-entering invoice."
-      );
+        // Step 3a: Reverse the existing invoice
+        await reverseSalesInvoice(existingInvoice._id, "Updating Sales");
+        console.log("reverseSalesInvoice compledted...\n");
+        console.log("create a new sales invoice started ...\n");
+        const newInvoice = await createReversalSalesInvoice(
+          customer,
+          items,
+          payment_methods,
+          transaction_type,
+          user_id,
+          shift_id,
+          notes="",
+          req.body.invoice_type,
+          req.body.serviceItems,
+          req.body.ticketId
+        );
+        console.log("create a new sales invoice ended ...\n");
+        console.log("New invoice created:", newInvoice);
 
-      // Step 3a: Reverse the existing invoice
-      await reverseSalesInvoice(existingInvoice._id, "Updating Sales");
-console.log('reverseSalesInvoice compledted...\n')
-console.log('create a new sales invoice started ...\n')
-      const newInvoice = await createReversalSalesInvoice(
-        customer,
-        items,
-        payment_methods,
-        transaction_type,
-        user_id,
-        shift_id,
-        notes,
-        req.body.invoice_type,
-        req.body.serviceItems,
-        req.body.ticketId
-      );
-      console.log('create a new sales invoice ended ...\n')
-      console.log("New invoice created:", newInvoice);
+        // Return success response
+        res.status(200).json({
+          message: "Invoice reversed and re-entered successfully",
+          invoice: newInvoice,
+        });
+      } else {
+        console.log(
+          "No financial changes detected. Directly updating the invoice."
+        );
 
-       // Return success response
-       res.status(200).json({
-        message: "Invoice reversed and re-entered successfully",
-        invoice: newInvoice,
-      });
+        // Step 3a: Directly update the invoice for non-financial changes
+        Object.assign(existingInvoice, updates);
+        await existingInvoice.save();
 
+        console.log("Invoice updated directly:", existingInvoice);
 
-    }   else {
-      console.log(
-        "No financial changes detected. Directly updating the invoice."
-      );
-
-      // Step 3a: Directly update the invoice for non-financial changes
-      Object.assign(existingInvoice, updates);
-      await existingInvoice.save();
-
-      console.log("Invoice updated directly:", existingInvoice);
-
-      // Return success response
-      res.status(200).json({
-        message: "Invoice updated successfully",
-        invoice: existingInvoice,
-      });
-    }
-  }
-    else{
+        // Return success response
+        res.status(200).json({
+          message: "Invoice updated successfully",
+          invoice: existingInvoice,
+        });
+      }
+    } else {
       // reversed only
 
       // Step 3a: Reverse the existing invoice
-      await reverseSalesInvoice(existingInvoice._id, transaction_type+" Sales");
-     // existingInvoice.status = transaction_type;
-     
-    //await existingInvoice.save();
+      await reverseSalesInvoice(
+        existingInvoice._id,
+        transaction_type + " Sales"
+      );
+      // existingInvoice.status = transaction_type;
 
-     // Return success response
-     res.status(200).json({
-      message: "Invoice return successfully",
-      invoice: existingInvoice,
-    });
+      //await existingInvoice.save();
 
+      // Return success response
+      res.status(200).json({
+        message: "Invoice return successfully",
+        invoice: existingInvoice,
+      });
     }
-
-
-    
-
-   
-    
-
-     
-  
   } catch (error) {
     console.error("Error during invoice update:", error.message);
     res
@@ -1058,12 +1090,12 @@ exports.deleteInvoice = async (req, res) => {
 
     // Step 3: Delete the invoice
     console.log("Deleting the invoice...");
-    if(existingInvoice?.ticketId){
-      console.log('ticketId found ', existingInvoice?.ticketId)
-     const ticket = await Ticket.findById(existingInvoice.ticketId);
-     ticket.invoiceId = null;
-     existingInvoice.ticketId = null
-     await ticket.save()
+    if (existingInvoice?.ticketId) {
+      console.log("ticketId found ", existingInvoice?.ticketId);
+      const ticket = await Ticket.findById(existingInvoice.ticketId);
+      ticket.invoiceId = null;
+      existingInvoice.ticketId = null;
+      await ticket.save();
       console.log("Deleting the invoice id from  ticket...");
     }
     // Update invoice status
@@ -1087,7 +1119,7 @@ exports.deleteInvoice = async (req, res) => {
 //invoiceId - _id
 async function reverseSalesInvoice(invoiceId, action) {
   try {
-    console.log('reverseSalesInvoice() started \n\n')
+    console.log("reverseSalesInvoice() started \n\n");
     const invoice = await SalesInvoice.findById(invoiceId);
     if (!invoice) throw new Error("Invoice not found");
 
@@ -1215,7 +1247,7 @@ async function processPaymentReversal(
 
 async function updateInventoryReversal(items) {
   try {
-    console.log('updateInventoryReversal() started ....\n')
+    console.log("updateInventoryReversal() started ....\n");
     const serializedItems = items.filter((item) => item.isSerialized);
     const nonSerializedItems = items.filter((item) => !item.isSerialized);
 
@@ -1245,7 +1277,7 @@ async function updateInventoryReversal(items) {
       },
     }));
     await NonSerializedStock.bulkWrite(nonSerializedUpdates);
-    console.log('updateInventoryReversal() ended ....\n')
+    console.log("updateInventoryReversal() ended ....\n");
   } catch (error) {
     console.error("Error during inventory reversal:", error);
     throw error;
