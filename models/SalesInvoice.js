@@ -52,6 +52,23 @@ const salesInvoiceSchema = new mongoose.Schema({
         default: "Unpaid" 
     }, // Status of the invoice
     notes: { type: String, required: false }, // Optional notes for the invoice
+
+
+    //service sales
+    invoice_type:{
+      type: String,
+      enum:['Sale', 'Service'],
+      default:'Sale'
+    },
+    serviceItems:[],
+    ticketId:{
+      type:mongoose.Types.ObjectId,
+      ref:'Ticket'
+    },
+
+
+
+    
 }, {
   timestamps : true
 });

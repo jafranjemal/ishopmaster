@@ -24,9 +24,19 @@ class TicketService {
         deviceData,
         deviceInspectionData,
         repairStatus,
-        ticketStatus
-      } = ticketData;
+        ticketStatus,
 
+      } = ticketData;
+      const serviceItems = ticketData.serviceItems
+      .filter(Boolean)
+      .map((item) => ({
+        ...item,
+        associatedParts: item.associatedParts
+          ? item.associatedParts.filter((part) => part !== undefined)
+            .map((part) => ({ partId: part.partId, partCost: part.partCost }))
+          : [],
+      }));
+   
       // Check if customer exists
       const customer = await Customer.findById(customerID);
       if (!customer) {
@@ -75,7 +85,7 @@ class TicketService {
         ...ticketData,
         deviceInspectionId: deviceInspection._id,
         deviceID: device._id,
-        
+        serviceItems: serviceItems,
       });
 
       await newTicket.save();
@@ -135,12 +145,29 @@ class TicketService {
       throw new Error(`Error updating ticket: ${error.message}`);
     }
   }
-  // Update ticket status
+
   static async updateTicketStatus(
     ticketID,
     newStatus,
-    technicianID = null,
-    troubleshootingFee = 0
+    
+  ) {
+try{
+  let ticket = await Ticket.findById(ticketID);
+  if (!ticket) {
+    throw new Error("Ticket not found");
+  }
+  ticket.ticketStatus = newStatus;
+  await ticket.save();
+  return ticket;
+}catch(error){
+  throw new Error(`Error updating ticket status: ${error.message}`);
+}
+  }
+  // Update ticket status
+  static async updateTicketRepairStatus(
+    ticketID,
+    newStatus,
+    
   ) {
     try {
       // Find the ticket
@@ -248,6 +275,7 @@ class TicketService {
     try {
       const ticket = await Ticket.find({  })
         .populate("customerID")
+        .populate("invoiceId")
         .populate("deviceID")
         .populate("reportedIssues")
         .populate("deviceInspectionId")

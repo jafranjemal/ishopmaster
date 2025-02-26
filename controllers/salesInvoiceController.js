@@ -6,8 +6,9 @@ const NonSerializedStock = require("../models/NonSerializedStock");
 const Payment = require("../models/Payment");
 const Shift = require("../models/Shift");
 const { ApiError } = require("../utility/ApiError");
+const Ticket = require("../models/Ticket");
 
-async function updateInventory(items) {
+async function updateInventory_old(items) {
   console.log("updateInventory start...");
   const serializedItems = items.filter((item) => item.isSerialized);
   const nonSerializedItems = items.filter((item) => !item.isSerialized);
@@ -59,6 +60,81 @@ async function updateInventory(items) {
 
   console.log("updateInventory end...");
 }
+
+async function updateInventory(items) {
+  try {
+    console.log("updateInventory start...");
+
+    // Separate serialized and non-serialized items
+    const { serializedItems, nonSerializedItems } = separateItems(items);
+
+    // Validate and prepare serialized items for bulk update
+    const serializedUpdates = prepareSerializedUpdates(serializedItems);
+
+    // Prepare non-serialized items for bulk update
+    const nonSerializedUpdates = prepareNonSerializedUpdates(nonSerializedItems);
+
+    // Perform bulk updates
+    await performBulkUpdates(serializedUpdates, nonSerializedUpdates);
+
+    console.log("updateInventory end...");
+  } catch (error) {
+    console.error(error);
+    throw error;
+  }
+}
+
+// Helper function to separate serialized and non-serialized items
+function separateItems(items) {
+  return {
+    serializedItems: items.filter((item) => item.isSerialized),
+    nonSerializedItems: items.filter((item) => !item.isSerialized),
+  };
+}
+
+// Helper function to prepare serialized items for bulk update
+function prepareSerializedUpdates(serializedItems) {
+  return serializedItems.flatMap((item) => {
+    if (!Array.isArray(item.serialNumbers)) {
+      throw new ApiError(400, 'Invalid serial numbers format');
+    }
+    return item.serialNumbers.map((serialNumber) => ({
+      updateOne: {
+        filter: { serialNumber },
+        update: {
+          $set: {
+            status: "Sold",
+            sold_date: new Date(),
+          },
+        },
+      },
+    }));
+  });
+}
+
+// Helper function to prepare non-serialized items for bulk update
+function prepareNonSerializedUpdates(nonSerializedItems) {
+  return nonSerializedItems.map((item) => ({
+    updateOne: {
+      filter: { item_id: item.item_id },
+      update: {
+        $inc: {
+          soldQty: item.quantity,
+          availableQty: -item.quantity,
+        },
+      },
+    },
+  }));
+}
+
+// Helper function to perform bulk updates
+async function performBulkUpdates(serializedUpdates, nonSerializedUpdates) {
+  await Promise.all([
+    SerializedStock.bulkWrite(serializedUpdates),
+    NonSerializedStock.bulkWrite(nonSerializedUpdates),
+  ]);
+}
+
 
 async function processPayment(invoiceId, paymentDetails) {
   console.log("processPayment start...");
@@ -490,36 +566,55 @@ async function logSaleInShift(shiftId, invoiceId, totalAmount) {
 async function createSalesInvoice(
   customerId,
   items,
-  paymentMethods,
+  payment_methods=[],
   transactionType,
   userId,
   shiftId,
-  notes
+  notes,
+  invoice_type,
+  serviceItems,
+  ticketId
 ) {
-  const totalAmount = items.reduce((total, item) => total + item.totalPrice, 0);
-  const total_paid_amount = paymentMethods.reduce(
+  const itemTotal = items.reduce((total, item) => total + item.totalPrice, 0);
+  const serviceTotal = serviceItems && serviceItems.reduce((total, item) => total + item.total, 0);
+  const total_paid_amount = payment_methods.reduce(
     (total, item) => total + item.amount,
     0
   );
 
+  const totalAmount = itemTotal+serviceTotal
   // Create the sales invoice
   const invoice = new SalesInvoice({
     customer: customerId,
     items,
-    total_amount: totalAmount,
+    total_amount: itemTotal+serviceTotal,
     total_paid_amount,
-    payment_methods: paymentMethods,
+    payment_methods: payment_methods,
     transaction_type: transactionType,
     user_id: userId,
     shift_id: shiftId,
     notes,
+
+    invoice_type,
+    serviceItems,
+    ticketId
   });
+
+  if(invoice_type ==="Service"){
+
+    const ticket = await Ticket.findById(ticketId)
+    if(!ticket) throw Error("Ticket not found")
+    
+    ticket.invoiceId = invoice._id
+    await ticket.save()
+    invoice.ticketId = ticket._id
+  }
 
   await invoice.save();
 
   // Handle payments sales
   // await handleCashSale(totalAmount, invoice.invoice_id, paymentMethods);
-  await processPayment(invoice.invoice_id, paymentMethods);
+  await processPayment(invoice.invoice_id, payment_methods);
 
   // Update inventory
   await updateInventory(items);
@@ -527,9 +622,12 @@ async function createSalesInvoice(
   // Update Sales shift
   await logSaleInShift(shiftId, invoice.invoice_id, totalAmount);
 
+  
   const lastInvoice = await SalesInvoice.findOne({
     _id: invoice._id,
   });
+
+
 
   return lastInvoice;
 }
@@ -540,48 +638,77 @@ async function createReversalSalesInvoice(
   transactionType,
   userId,
   shiftId,
-  notes
+  notes,
+  invoice_type,
+  serviceItems,
+  ticketId
 ) {
-  const totalAmount = items.reduce((total, item) => total + item.totalPrice, 0);
-  const total_paid_amount = paymentMethods.reduce(
-    (total, item) => total + item.amount,
-    0
-  );
 
-  // Create the sales invoice
-  const invoice = new SalesInvoice({
-    customer: customerId,
-    items,
-    total_amount: totalAmount,
-    total_paid_amount,
-    payment_methods: paymentMethods,
-    transaction_type: transactionType,
-    user_id: userId,
-    shift_id: shiftId,
-    notes,
-  });
-
-  await invoice.save();
-
-  // Handle payments sales
-  // await handleCashSale(totalAmount, invoice.invoice_id, paymentMethods);
-  await paymentProcessFromAccount(
-    invoice.customer,
-    invoice.total_amount,
-    invoice.invoice_id
-  );
-
-  // Update inventory
-  await updateInventory(items);
-
-  // Update Sales shift
-  await logSaleInShift(shiftId, invoice.invoice_id, totalAmount);
-
-  const lastInvoice = await SalesInvoice.findOne({
-    _id: invoice._id,
-  });
-
-  return lastInvoice;
+  try {
+    console.log('createReversalSalesInvoice() started...\n')
+    console.log('#######################\n')
+      console.log( "invoice_type",invoice_type)
+      console.log("serviceItems", serviceItems)
+        console.log("ticketId",ticketId)
+        
+        console.log('#######################\n')
+    const itemTotal = items.reduce((total, item) => total + item.totalPrice, 0);
+    const serviceItemsArray = Array.isArray(serviceItems) ? serviceItems : [];
+    const serviceTotal = serviceItemsArray.reduce((total, item) => total + item.total, 0);
+    //const serviceTotal = serviceItems && serviceItems.reduce((total, item) => total + item.total, 0);
+    const totalAmount = itemTotal+serviceTotal
+    const total_paid_amount = paymentMethods.reduce(
+      (total, item) => total + item.amount,
+      0
+    );
+  
+  
+    // Create the sales invoice
+    const invoice = new SalesInvoice({
+      customer: customerId,
+      items,
+      total_amount: totalAmount,
+      total_paid_amount,
+      payment_methods: paymentMethods,
+      transaction_type: transactionType,
+      user_id: userId,
+      shift_id: shiftId,
+      notes,
+      
+      invoice_type,
+      serviceItems,
+      ticketId
+    });
+  
+    await invoice.save();
+  
+    // Handle payments sales
+    // await handleCashSale(totalAmount, invoice.invoice_id, paymentMethods);
+    await paymentProcessFromAccount(
+      invoice.customer,
+      invoice.total_amount,
+      invoice.invoice_id
+    );
+  
+    // Update inventory
+    await updateInventory(items);
+  
+    // Update Sales shift
+    await logSaleInShift(shiftId, invoice.invoice_id, totalAmount);
+  
+    const lastInvoice = await SalesInvoice.findOne({
+      _id: invoice._id,
+    });
+  
+    return lastInvoice;
+    console.log('createReversalSalesInvoice() ended...\n')
+  }
+  catch (error) {
+  // Handle errors
+  console.log('createReversalSalesInvoice() failed', error);
+  throw error;
+}
+ 
 }
 
 /**
@@ -671,6 +798,12 @@ exports.createSalesInvoice = async (req, res) => {
     transaction_type,
     user_id,
     shift_id,
+    notes="",
+
+
+    invoice_type="Sale",
+serviceItems=[],
+ticketId=""
   } = req.body;
 
   try {
@@ -680,7 +813,11 @@ exports.createSalesInvoice = async (req, res) => {
       payment_methods,
       transaction_type,
       user_id,
-      shift_id
+      shift_id,
+      notes,
+      invoice_type,
+      serviceItems,
+      ticketId
     );
     res.status(201).json(invoice);
   } catch (error) {
@@ -705,6 +842,8 @@ exports.getAllSalesInvoices = async (req, res) => {
 
     const invoices = await SalesInvoice.find()
       .populate("customer")
+      .populate("ticketId")
+      .populate("ticketId")
       .populate("items.item_id")
       .sort({ invoice_date: sort }) // sort by createdAt field
       //.limit(limit)
@@ -750,6 +889,9 @@ exports.updateSalesInvoice = async (req, res) => {
     transaction_type,
     user_id,
     shift_id,
+    invoice_type,
+    notes="",
+  ticketId
   } = req.body;
 
   console.log(`Request received to update invoice with ID: ${id}`);
@@ -804,16 +946,21 @@ exports.updateSalesInvoice = async (req, res) => {
 
       // Step 3a: Reverse the existing invoice
       await reverseSalesInvoice(existingInvoice._id, "Updating Sales");
-
+console.log('reverseSalesInvoice compledted...\n')
+console.log('create a new sales invoice started ...\n')
       const newInvoice = await createReversalSalesInvoice(
         customer,
         items,
         payment_methods,
         transaction_type,
         user_id,
-        shift_id
+        shift_id,
+        notes,
+        req.body.invoice_type,
+        req.body.serviceItems,
+        req.body.ticketId
       );
-
+      console.log('create a new sales invoice ended ...\n')
       console.log("New invoice created:", newInvoice);
 
        // Return success response
@@ -911,7 +1058,14 @@ exports.deleteInvoice = async (req, res) => {
 
     // Step 3: Delete the invoice
     console.log("Deleting the invoice...");
-    // await SalesInvoice.findByIdAndDelete(id);
+    if(existingInvoice?.ticketId){
+      console.log('ticketId found ', existingInvoice?.ticketId)
+     const ticket = await Ticket.findById(existingInvoice.ticketId);
+     ticket.invoiceId = null;
+     existingInvoice.ticketId = null
+     await ticket.save()
+      console.log("Deleting the invoice id from  ticket...");
+    }
     // Update invoice status
     existingInvoice.status = "Reversed";
     existingInvoice.transaction_type = "Reversed";
@@ -933,6 +1087,7 @@ exports.deleteInvoice = async (req, res) => {
 //invoiceId - _id
 async function reverseSalesInvoice(invoiceId, action) {
   try {
+    console.log('reverseSalesInvoice() started \n\n')
     const invoice = await SalesInvoice.findById(invoiceId);
     if (!invoice) throw new Error("Invoice not found");
 
@@ -960,6 +1115,7 @@ async function reverseSalesInvoice(invoiceId, action) {
     // Remove transaction records
     //await Transaction.deleteMany({ reason: `Payment for Invoice ${invoiceId}` });
   } catch (error) {
+    console.error("Error during invoice reversal:", error.message);
     throw error;
   }
 }
@@ -1059,6 +1215,7 @@ async function processPaymentReversal(
 
 async function updateInventoryReversal(items) {
   try {
+    console.log('updateInventoryReversal() started ....\n')
     const serializedItems = items.filter((item) => item.isSerialized);
     const nonSerializedItems = items.filter((item) => !item.isSerialized);
 
@@ -1088,7 +1245,9 @@ async function updateInventoryReversal(items) {
       },
     }));
     await NonSerializedStock.bulkWrite(nonSerializedUpdates);
+    console.log('updateInventoryReversal() ended ....\n')
   } catch (error) {
+    console.error("Error during inventory reversal:", error);
     throw error;
   }
 }
@@ -1104,6 +1263,7 @@ async function logSaleInShiftReversal(shiftId, invoiceId, total_amount) {
     shift.totalTransactions -= 1;
     await shift.save();
   } catch (error) {
+    console.error("Error during shift reversal:", error);
     throw error;
   }
 }

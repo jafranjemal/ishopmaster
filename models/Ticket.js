@@ -27,6 +27,11 @@ const TicketSchema = new mongoose.Schema({
     ref: "Customer",
     required: true,
   },
+  invoiceId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "SalesInvoice",
+    required: false,
+  },
   deviceID: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Device",
@@ -67,6 +72,35 @@ const TicketSchema = new mongoose.Schema({
       price: { type: Number, default: 0 },
       discount: { type: Number, default: 0 },
       total: { type: Number, default: 0 },
+      warranty: {
+        type: Number,
+        default: 0, // Model name (e.g., "iPhone 14 Pro Max")
+      },
+      warrantyUnit: {
+        type: String,
+        default: "Days", // Model name (e.g., "iPhone 14 Pro Max")
+      },
+      associatedParts: [
+        {
+          partId: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "Item",
+            
+          },
+        
+          _id: { type: String,  },
+          partCost: { type: String,  },
+          itemName: { type: String,  },
+          itemImage: { type: String, required: false },
+          quantity: { type: Number,  },
+          discount: { type: Number, required: false, default: 0 },
+          lastSellingPrice: { type: Number, required: false },
+          price: { type: Number,  },
+          totalPrice: { type: Number,  }, // Total price for the quantity sold
+          serialNumbers: { type: [String], required: false }, // Array of serial numbers if applicable
+          isSerialized: { type: Boolean, default: false }, // Flag to indicate if the item is serialized
+        }
+      ],
       modelId: { type: mongoose.Schema.Types.ObjectId, ref: "PhoneModel" },
     },
   ],
@@ -79,6 +113,7 @@ const TicketSchema = new mongoose.Schema({
     required: false,
   },
   repairNotes: { type: String },
+  updateNote: { type: String },
   createdAt: { type: Date, default: Date.now },
   ticketStatus: {
     type: String,

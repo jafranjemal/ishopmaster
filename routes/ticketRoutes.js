@@ -48,6 +48,29 @@ router.put("/:ticketId", async (req, res) => {
     res.status(400).json({ error: error.message });
   }
 });
+// Update a ticket
+router.put("/:ticketId/ticket-status/:status", async (req, res) => {
+  try {
+    const updatedTicket = await TicketService.updateTicketStatus(req.params.ticketId,req.params.status);
+    if (!updatedTicket) {
+      return res.status(404).json({ error: "Ticket not found" });
+    }
+    res.status(200).json(updatedTicket);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+router.put("/:ticketId/repair-status/:status", async (req, res) => {
+  try {
+    const updatedTicket = await TicketService.updateTicketRepairStatus(req.params.ticketId,req.params.status);
+    if (!updatedTicket) {
+      return res.status(404).json({ error: "Ticket not found" });
+    }
+    res.status(200).json(updatedTicket);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
 
 // Delete a ticket
 router.delete("/:ticketId", async (req, res) => {

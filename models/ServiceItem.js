@@ -44,6 +44,10 @@ const serviceItemSchema = new Schema(
           type: Number,
           required: true, // Price for this model-specific service
         },
+        total: {
+          type: Number,
+          required: true, // final price model-specific service
+        },
         duration: {
           type: String,
           required: true, // Duration for this model (e.g., "2 hours")
@@ -53,6 +57,10 @@ const serviceItemSchema = new Schema(
           required: true, // Labor charge specific to this model
         },
         commission: {
+          type: Number,
+          required: false, // Labor charge specific to this model
+        },
+        discount: {
           type: Number,
           required: false, // Labor charge specific to this model
         },
@@ -75,6 +83,8 @@ const serviceItemSchema = new Schema(
               type: Number,
               // Quantity needed
             },
+            serialNumbers: { type: [String], required: false }, // Array of serial numbers if applicable
+            isSerialized: { type: Boolean, default: false }, // Flag to indicate if the item is serialized
           },
         ],
       },
@@ -99,7 +109,7 @@ serviceItemSchema.virtual('priceRange').get(function() {
     return 'N/A';
   }
 
-  const prices = this.modelVariants.map(variant => variant.price);
+  const prices = this.modelVariants.map(variant => variant.total);
   const minPrice = Math.min(...prices);
   const maxPrice = Math.max(...prices);
 
