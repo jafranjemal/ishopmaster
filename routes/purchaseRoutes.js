@@ -6,6 +6,7 @@ router.post("/", purchaseController.createPurchase);
 router.get("/", purchaseController.getAllPurchases);
 router.get("/:id", purchaseController.getPurchaseById);
 router.put("/:purchaseId", purchaseController.updatePurchase);
+router.put("/usp/:purchaseId", purchaseController.updatePurchaseSellingPrice);
 router.delete("/:purchaseId", purchaseController.deletePurchase);
 router.get('/due-purchases/supplier/:id', purchaseController.getDuePurchaseBySupplierId);
 

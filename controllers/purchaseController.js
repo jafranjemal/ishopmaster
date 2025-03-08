@@ -249,6 +249,108 @@ const purchases = await Purchase.find({ 'supplier': id, 'payment_due_amount': { 
   }
 };
 
+exports.updatePurchaseSellingPrice = async (req, res) => {
+  try {
+    // Validate request parameters
+    const { purchaseId } = req.params;
+    if (!purchaseId) {
+      return res.status(400).json({ message: "Purchase ID is required" });
+    }
+
+    // Validate request body
+    const { purchasedItems } = req.body;
+    if (!Array.isArray(purchasedItems) || purchasedItems.length === 0) {
+      return res.status(400).json({ message: "Updated purchase items are required" });
+    }
+
+    // Find existing purchase
+    const existingPurchase = await Purchase.findById(purchaseId);
+    if (!existingPurchase) {
+      return res.status(404).json({ message: "Purchase not found" });
+    }
+
+    // Update existing purchase
+    existingPurchase.purchasedItems = purchasedItems;
+    await existingPurchase.save();
+
+    // Fetch all relevant serialized and non-serialized stocks at once
+    const serializedItemIds = purchasedItems
+      .filter(item => item.isSerialized)
+      .map(item => item.item_id._id);
+    
+    const nonSerializedItemIds = purchasedItems
+      .filter(item => !item.isSerialized)
+      .map(item => item.item_id._id);
+
+    const existingSerializedStocks = await SerializedStock.find({
+      item_id: { $in: serializedItemIds },
+      purchase_id: existingPurchase._id,
+    });
+
+    const existingNonSerializedStocks = await NonSerializedStock.find({
+      item_id: { $in: nonSerializedItemIds },
+      purchase_id: existingPurchase._id,
+    });
+
+    // Convert fetched stocks into maps for fast lookup
+    const serializedStockMap = new Map(
+      existingSerializedStocks.map(stock => [stock.serialNumber, stock])
+    );
+
+    const nonSerializedStockMap = new Map(
+      existingNonSerializedStocks.map(stock => [stock.item_id.toString(), stock])
+    );
+
+    // Process updates for both serialized and non-serialized stock
+    const updatePromises = [];
+
+    for (const item of purchasedItems) {
+      if (item.isSerialized) {
+        for (const serializedItem of item.serializedItems) {
+          const existingSerializedStock = serializedStockMap.get(serializedItem.serialNumber);
+
+          if (existingSerializedStock) {
+            // Check if serial number changed
+            if (existingSerializedStock.serialNumber !== serializedItem.serialNumber) {
+              const serialExists = serializedStockMap.has(serializedItem.serialNumber);
+              if (serialExists) {
+                console.warn(`Duplicate serial number detected: ${serializedItem.serialNumber}`);
+                continue; // Skip update
+              }
+              existingSerializedStock.serialNumber = serializedItem.serialNumber;
+            }
+
+            // Update selling price
+            existingSerializedStock.sellingPrice = serializedItem.sellingPrice;
+            updatePromises.push(existingSerializedStock.save());
+          } else {
+            console.warn(`Serialized stock not found for item ${item.item_id.itemName}`);
+          }
+        }
+      } else {
+        const existingNonSerializedStock = nonSerializedStockMap.get(item.item_id.toString());
+
+        if (existingNonSerializedStock) {
+          existingNonSerializedStock.sellingPrice = item.sellingPrice;
+          updatePromises.push(existingNonSerializedStock.save());
+        } else {
+          console.warn(`Non-serialized stock not found for item ${item.item_id.itemName}`);
+        }
+      }
+    }
+
+    // Execute all update operations in parallel
+    await Promise.all(updatePromises);
+
+    res.status(200).json({ message: "Purchase updated successfully", purchase: existingPurchase });
+  } catch (error) {
+    console.error("Error updating purchase:", error);
+    res.status(500).json({ message: "Error updating purchase", error: error.message });
+  }
+};
+
+
+
 exports.updatePurchase = async (req, res) => {
   try {
     const { purchaseId } = req.params;

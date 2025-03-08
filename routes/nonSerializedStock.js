@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const { getNonSerializedStock, addNonSerializedStock } = require("../controllers/nonSerializedStockController");
 
-router.get("/non-serialized", getNonSerializedStock);
-router.post("/non-serialized", addNonSerializedStock);
+router.get("/", getNonSerializedStock);
+router.post("/", addNonSerializedStock);
 
 module.exports = router;

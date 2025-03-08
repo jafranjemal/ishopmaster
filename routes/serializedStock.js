@@ -1,8 +1,14 @@
 const express = require("express");
 const router = express.Router();
-const { getSerializedStock, addSerializedStock } = require("../controllers/serializedStockController");
+const { deleteSerializedStock, updateSerializedStock,
+    getSerializedStockExist, 
+    getSerializedStock, 
+    addSerializedStock } = require("../controllers/serializedStockController");
 
-router.get("/serialized", getSerializedStock);
-router.post("/serialized", addSerializedStock);
+router.get("/", getSerializedStock);
+router.get("/exist/:serialNumber", getSerializedStockExist);
+router.post("/", addSerializedStock);
+router.patch('/:id',updateSerializedStock);
+router.delete('/:id', deleteSerializedStock);
 
 module.exports = router;

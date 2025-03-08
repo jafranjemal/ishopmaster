@@ -639,6 +639,7 @@ exports.getUnifiedStock = async (req, res) => {
           lastUnitCost: { $last: "$unitCost" }, // Count of available serialized items
           batches: {
             $push: {
+              
               batch_number: "$batch_number",
               availableQty: "$availableQty",
               purchaseDate: "$purchaseDate",
@@ -688,6 +689,7 @@ exports.getUnifiedStock = async (req, res) => {
           lastUnitCost: { $first: "$lastUnitCost" },
           batches: {
             $push: {
+              item_id:  "$item_id" ,
               batch_number: "$batches.batch_number",
               availableQty: "$batches.availableQty",
               purchaseDate: "$batches.purchaseDate",
@@ -761,6 +763,7 @@ exports.getUnifiedStock = async (req, res) => {
           lastUnitCost: { $first: "$lastUnitCost" },
           batches: {
             $push: {
+              item_id: "$item_id" ,
               batch_number: "$batches.batch_number",
               serialNumber: "$batches.serialNumber",
               status: "$batches.status",

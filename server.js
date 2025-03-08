@@ -57,12 +57,16 @@ const BwipJs = require('bwip-js');
 const deviceRoutes = require("./routes/deviceRoutes");
 const deviceInspectionRoutes = require("./routes/deviceInspectionRoutes");
 const reportedIssueRoutes = require("./routes/reportedIssueRoutes");
+const serializedStockRoutes = require("./routes/serializedStock");
+const noneSerializedStockRoutes = require("./routes/nonSerializedStock");
 
 
 app.use('/api/items', productRoutes);
 app.use("/api/suppliers", supplierRoutes);
 app.use("/api/purchase", purchaseRoutes);
 app.use("/api/stock", stockRoutes);
+app.use("/api/serializedStock", serializedStockRoutes);
+app.use("/api/noneSerializedStock", noneSerializedStockRoutes);
 app.use("/api/accounts", accountRoutes);
 app.use("/api/transactions", transactionRoutes);
 app.use("/api/companies", companyRoutes);

@@ -65,6 +65,69 @@ async function updateInventory(items) {
     console.log("updateInventory start...");
 
     // Separate serialized and non-serialized items
+    const serializedItems = items.filter((item) => item.isSerialized);
+    const nonSerializedItems = items.filter((item) => !item.isSerialized);
+
+    const serializedUpdates = [];
+
+    for (const item of serializedItems) {
+      if (!Array.isArray(item.serialNumbers)) {
+        throw new Error("Invalid serial numbers format");
+      }
+
+      item.serialNumbers.forEach((serialNumber) => {
+        serializedUpdates.push({
+          updateOne: {
+            filter: { serialNumber },
+            update: {
+              $set: {
+                status: "Sold",
+                sold_date: new Date(),
+              },
+            },
+          },
+        });
+      });
+    }
+
+    console.log("nonSerializedItems ", nonSerializedItems)
+    const nonSerializedUpdates = nonSerializedItems.map((item) => ({
+      updateOne: {
+        filter: { item_id: item.item_id , batch_number: item.batch_number },
+        update: {
+          $inc: {
+            soldQty: item.quantity,
+            availableQty: - item.quantity,
+          },
+        },
+      },
+    }));
+
+    const updatePromises = [];
+    if (serializedUpdates.length > 0) {
+      updatePromises.push(SerializedStock.bulkWrite(serializedUpdates));
+    }
+    if (nonSerializedUpdates.length > 0) {
+      updatePromises.push(NonSerializedStock.bulkWrite(nonSerializedUpdates));
+    }
+
+    if (updatePromises.length > 0) {
+      await Promise.all(updatePromises);
+    }
+
+    console.log("updateInventory end...");
+  } catch (error) {
+    console.error("Error in updateInventory:", error);
+    throw error;
+  }
+}
+
+
+async function updateInventory_o(items) {
+  try {
+    console.log("updateInventory start...");
+
+    // Separate serialized and non-serialized items
     const { serializedItems, nonSerializedItems } = separateItems(items);
 
     // Validate and prepare serialized items for bulk update

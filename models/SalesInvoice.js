@@ -6,6 +6,7 @@ const itemSchema = new mongoose.Schema({
     _id: { type: String, required: true },
     barcode: { type: String, required: true },
     itemName: { type: String, required: true },
+    batch_number:  { type: String, required: true },
     itemImage: { type: String, required: false },
     quantity: { type: Number, required: true },
     discount: { type: Number, required: false , default:0},
