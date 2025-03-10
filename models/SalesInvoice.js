@@ -15,6 +15,14 @@ const itemSchema = new mongoose.Schema({
     totalPrice: { type: Number, required: true }, // Total price for the quantity sold
     serialNumbers: { type: [String], required: false }, // Array of serial numbers if applicable
     isSerialized: { type: Boolean, default: false }, // Flag to indicate if the item is serialized
+    warranty: {
+      type: Number,
+      default: 0,  
+    },
+    warrantyUnit: {
+      type: String,
+      default: "Days",  
+    },
 });
 
 const paymentMethodSchema = new mongoose.Schema({

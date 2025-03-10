@@ -872,6 +872,7 @@ async function settleDuePayment(existingInvoice, updates) {
   }
 }
 
+ 
 // Helper function to check if items are equal based on specific fields
 function areItemsEqual(updates, existing) {
   const fieldsToCheck = [
@@ -889,11 +890,37 @@ function areItemsEqual(updates, existing) {
     '_id',
   ];
 
-  return updates.every(update => {
-    const existingItem = existing.find(item => item.barcode === update.barcode);
-    return existingItem && fieldsToCheck.every(field => update[field] === existingItem[field]);
+  return fieldsToCheck.every(field => {
+    const updateValue = updates[field];
+    const existingValue = existing[field];
+
+    // Convert _id to string for proper comparison
+    if (field === '_id' || field === 'item_id') {
+      return String(updateValue) === String(existingValue);
+    }
+
+      // Handle array comparison (e.g., serialNumbers)
+      if (Array.isArray(updateValue) && Array.isArray(existingValue)) {
+        const areArraysEqual = updateValue.length === existingValue.length &&
+          updateValue.every((val, index) => val === existingValue[index]);
+  
+        if (!areArraysEqual) {
+          console.log(`Field changed: ${field}, Old Value: ${JSON.stringify(existingValue)}, New Value: ${JSON.stringify(updateValue)}`);
+        }
+        return areArraysEqual;
+      }
+
+
+    if (updateValue !== existingValue) {
+      console.log(`Field changed: ${field}, Old Value: ${existingValue}, New Value: ${updateValue}`);
+      return false; // Exit early if a difference is found
+    }
+
+    return true;
   });
 }
+
+
 
 // Create a new sales invoice
 exports.createSalesInvoice = async (req, res) => {
@@ -1039,15 +1066,35 @@ exports.updateSalesInvoice = async (req, res) => {
       // const hasItemChanges =
       //   updates.items &&
       //   JSON.stringify(updates.items) !== JSON.stringify(existingInvoice.items);
-        
-      const hasItemChanges = updates.items && !areItemsEqual(updates.items, existingInvoice.items);
-      console.log("Has customer change?", hasCustomerChange);
-      console.log("Has item changes?", hasItemChanges);
+      
+      const existingInvoiceForCheck = await SalesInvoice.findById(id)
+      const hasItemChanges =
+      updates.items &&
+      existingInvoice.items &&
+      (
+        updates.items.length !== existingInvoice.items.length || // If item count is different, something changed
+        updates.items.some((updateItem) => {
+          const existingItem = existingInvoiceForCheck.items.find((item) => item._id === updateItem._id);
+          return !existingItem || !areItemsEqual(updateItem, existingItem);
+        })
+      );
+    
+    
+    console.log("Has customer change?", hasCustomerChange);
+    console.log("Has item changes?", hasItemChanges);
+    
+   // return res.status(400).json({hasItemChanges})
 
       if (hasCustomerChange || hasItemChanges) {
         console.log(
           "Financial changes detected. Reversing and re-entering invoice."
         );
+
+        if(existingInvoice.status === "Paid"){
+         return res.status(400).json({
+            message: "Cannot modify invoice with financial changes when it's already paid",
+          })
+        }
 
         // Step 3a: Reverse the existing invoice
         await reverseSalesInvoice(existingInvoice._id, "Updating Sales");
@@ -1060,7 +1107,7 @@ exports.updateSalesInvoice = async (req, res) => {
           transaction_type,
           user_id,
           shift_id,
-          notes="",
+          notes || "",
           req.body.invoice_type,
           req.body.serviceItems,
           req.body.ticketId
