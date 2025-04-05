@@ -604,29 +604,7 @@ exports.getUnifiedStock = async (req, res) => {
   try {
     // Fetch all items
     const items = await Items.find();
-
-    // Fetch non-serialized stock details
-    // const nonSerializedStocks = await NonSerializedStock.aggregate([
-    //   {
-    //     $group: {
-    //       _id: "$item_id",
-    //       totalStock: { $sum: "$availableQty" }, // Sum of availableQty
-    //       lastSellingPrice: { $last: '$sellingPrice' },
-    //       lastUnitCost: { $last: '$unitCost' }, // Count of available serialized items
-
-    //       batches: {
-    //         $push: {
-    //           batch_number: "$batch_number",
-    //           availableQty: "$availableQty",
-    //           purchaseDate: "$purchaseDate",
-    //           unitCost: "$unitCost",
-    //           sellingPrice: "$sellingPrice",
-    //           purchase_id: "$purchase_id",
-    //         },
-    //       },
-    //     },
-    //   },
-    // ]);
+ 
 
     const nonSerializedStocks = await NonSerializedStock.aggregate([
       {

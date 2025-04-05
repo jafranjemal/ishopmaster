@@ -90,14 +90,14 @@ async function updateInventory(items) {
       });
     }
 
-    console.log("nonSerializedItems ", nonSerializedItems)
+    console.log("nonSerializedItems ", nonSerializedItems);
     const nonSerializedUpdates = nonSerializedItems.map((item) => ({
       updateOne: {
-        filter: { item_id: item.item_id , batch_number: item.batch_number },
+        filter: { item_id: item.item_id, batch_number: item.batch_number },
         update: {
           $inc: {
             soldQty: item.quantity,
-            availableQty: - item.quantity,
+            availableQty: -item.quantity,
           },
         },
       },
@@ -121,7 +121,6 @@ async function updateInventory(items) {
     throw error;
   }
 }
-
 
 async function updateInventory_o(items) {
   try {
@@ -469,11 +468,11 @@ async function handleCreditSale(customerId, totalAmount, invoice_id) {
   }
   console.log({ customerAccount });
   console.log("handleCreditSale end...");
-}   
+}
 
 async function paymentProcessFromAccount(customerId, totalAmount, invoice_id) {
   console.log("paymentProcessFromAccount start...");
-  
+
   const invoice = await SalesInvoice.findOne({
     invoice_id: invoice_id,
   });
@@ -735,7 +734,10 @@ async function createReversalSalesInvoice(
 
     console.log("#######################\n");
     console.log("createReversalSalesInvoice()-> totalAmount", totalAmount);
-    console.log("createReversalSalesInvoice()->  total_paid_amount", total_paid_amount);
+    console.log(
+      "createReversalSalesInvoice()->  total_paid_amount",
+      total_paid_amount
+    );
 
     console.log("#######################\n");
     // Create the sales invoice
@@ -793,7 +795,7 @@ async function createReversalSalesInvoice(
  */
 async function settleDuePayment(existingInvoice, updates) {
   try {
-    console.log('settleDuePayment started..')
+    console.log("settleDuePayment started..");
     // Validate input data
     if (!existingInvoice || !updates) {
       throw new Error("Invalid input data");
@@ -872,55 +874,58 @@ async function settleDuePayment(existingInvoice, updates) {
   }
 }
 
- 
 // Helper function to check if items are equal based on specific fields
 function areItemsEqual(updates, existing) {
   const fieldsToCheck = [
-    'barcode',
-    'discount',
-    'isSerialized',
-    'itemImage',
-    'itemName',
-    'item_id',
-    'lastSellingPrice',
-    'price',
-    'quantity',
-    'serialNumbers',
-    'totalPrice',
-    '_id',
+    "barcode",
+    "discount",
+    "isSerialized",
+    "itemImage",
+    "itemName",
+    "item_id",
+    "lastSellingPrice",
+    "price",
+    "quantity",
+    "serialNumbers",
+    "totalPrice",
+    "_id",
   ];
 
-  return fieldsToCheck.every(field => {
+  return fieldsToCheck.every((field) => {
     const updateValue = updates[field];
     const existingValue = existing[field];
 
     // Convert _id to string for proper comparison
-    if (field === '_id' || field === 'item_id') {
+    if (field === "_id" || field === "item_id") {
       return String(updateValue) === String(existingValue);
     }
 
-      // Handle array comparison (e.g., serialNumbers)
-      if (Array.isArray(updateValue) && Array.isArray(existingValue)) {
-        const areArraysEqual = updateValue.length === existingValue.length &&
-          updateValue.every((val, index) => val === existingValue[index]);
-  
-        if (!areArraysEqual) {
-          console.log(`Field changed: ${field}, Old Value: ${JSON.stringify(existingValue)}, New Value: ${JSON.stringify(updateValue)}`);
-        }
-        return areArraysEqual;
-      }
+    // Handle array comparison (e.g., serialNumbers)
+    if (Array.isArray(updateValue) && Array.isArray(existingValue)) {
+      const areArraysEqual =
+        updateValue.length === existingValue.length &&
+        updateValue.every((val, index) => val === existingValue[index]);
 
+      if (!areArraysEqual) {
+        console.log(
+          `Field changed: ${field}, Old Value: ${JSON.stringify(
+            existingValue
+          )}, New Value: ${JSON.stringify(updateValue)}`
+        );
+      }
+      return areArraysEqual;
+    }
 
     if (updateValue !== existingValue) {
-      console.log(`Field changed: ${field}, Old Value: ${existingValue}, New Value: ${updateValue}`);
+      console.log(
+        `Field changed: ${field}, Old Value: ${existingValue}, New Value: ${updateValue}`
+      );
       return false; // Exit early if a difference is found
     }
 
     return true;
   });
 }
-
-
 
 // Create a new sales invoice
 exports.createSalesInvoice = async (req, res) => {
@@ -1066,37 +1071,74 @@ exports.updateSalesInvoice = async (req, res) => {
       // const hasItemChanges =
       //   updates.items &&
       //   JSON.stringify(updates.items) !== JSON.stringify(existingInvoice.items);
-      
-      const existingInvoiceForCheck = await SalesInvoice.findById(id)
+
+      const existingInvoiceForCheck = await SalesInvoice.findById(id);
       const hasItemChanges =
-      updates.items &&
-      existingInvoice.items &&
-      (
-        updates.items.length !== existingInvoice.items.length || // If item count is different, something changed
-        updates.items.some((updateItem) => {
-          const existingItem = existingInvoiceForCheck.items.find((item) => item._id === updateItem._id);
-          return !existingItem || !areItemsEqual(updateItem, existingItem);
-        })
-      );
-    
-    
-    console.log("Has customer change?", hasCustomerChange);
-    console.log("Has item changes?", hasItemChanges);
-    
-   // return res.status(400).json({hasItemChanges})
+        updates.items &&
+        existingInvoice.items &&
+        (updates.items.length !== existingInvoice.items.length || // If item count is different, something changed
+          updates.items.some((updateItem) => {
+            const existingItem = existingInvoiceForCheck.items.find(
+              (item) => item._id === updateItem._id
+            );
+            return !existingItem || !areItemsEqual(updateItem, existingItem);
+          }));
+
+      console.log("Has customer change?", hasCustomerChange);
+      console.log("Has item changes?", hasItemChanges);
+
+      // return res.status(400).json({hasItemChanges})
 
       if (hasCustomerChange || hasItemChanges) {
         console.log(
           "Financial changes detected. Reversing and re-entering invoice."
         );
 
-        if(existingInvoice.status === "Paid"){
-         return res.status(400).json({
-            message: "Cannot modify invoice with financial changes when it's already paid",
-          })
+        if (existingInvoice.status === "Paid") {
+          return res.status(400).json({
+            message:
+              "Cannot modify invoice with financial changes when it's already paid",
+          });
         }
 
-        // Step 3a: Reverse the existing invoice
+        if (hasItemChanges && existingInvoice.status === "Unpaid") {
+          //only change items details and update the invoice
+
+          // 1. update items
+          Object.assign(existingInvoice, updates);
+          // 2. update total amount and total paid amount
+          // 3. remove credit transaction
+
+          // Fetch all transactions related to the invoice
+          const transactions = await Transaction.find({
+            reason: { $regex: `${existingInvoice.invoice_id}`, $options: "i" },
+          });
+
+          // Process each transaction
+          for (const transaction of transactions) {
+            // Check if the transaction is for a credit sale
+            console.log(`deleting credit tranaction for ${existingInvoice.invoice_id}`);
+            await transaction.deleteOne();
+          }
+
+          await existingInvoice.save();
+
+          // 4. Now check new payment method, if any methods found then create a transaction
+
+          await processPayment(existingInvoice.invoice_id, payment_methods);
+
+ // Return success response
+ res.status(200).json({
+  message: "Invoice updated successfully",
+  invoice: existingInvoice,
+});
+
+          // 5. update invoice status to unpaid if it's paid
+        } else {
+          //hasItemChanges && existingInvoice.status ==="paid" or partial paid
+          //change entire invoice details and update the new invoice
+
+          // Step 3a: Reverse the existing invoice
         await reverseSalesInvoice(existingInvoice._id, "Updating Sales");
         console.log("reverseSalesInvoice compledted...\n");
         console.log("create a new sales invoice started ...\n");
@@ -1114,12 +1156,16 @@ exports.updateSalesInvoice = async (req, res) => {
         );
         console.log("create a new sales invoice ended ...\n");
         console.log("New invoice created:", newInvoice);
+ // Return success response
+ res.status(200).json({
+  message: "Invoice reversed and re-entered successfully",
+  invoice: newInvoice,
+});
 
-        // Return success response
-        res.status(200).json({
-          message: "Invoice reversed and re-entered successfully",
-          invoice: newInvoice,
-        });
+        }
+
+        
+       
       } else {
         console.log(
           "No financial changes detected. Directly updating the invoice."

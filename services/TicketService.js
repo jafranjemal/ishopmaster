@@ -108,9 +108,12 @@ class TicketService {
         throw new Error("Ticket not found");
       }
   
+    
       // Update ticket fields
+      Object.assign(ticket, { inventoryItems: updates.inventoryItems });
+
       Object.assign(ticket, updates);
-  
+     
       // Check if customer exists
       if (updates.customerID) {
         const customer = await Customer.findById(updates.customerID);
@@ -137,11 +140,13 @@ class TicketService {
         await deviceInspection.save();
       }
   
+      console.log(ticket.inventoryItems)
       // Save updated ticket
       await ticket.save();
   
       return ticket;
     } catch (error) {
+      console.log(error)
       throw new Error(`Error updating ticket: ${error.message}`);
     }
   }
