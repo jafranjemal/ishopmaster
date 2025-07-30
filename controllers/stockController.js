@@ -982,7 +982,7 @@ exports.getUnifiedStock = async (req, res) => {
         isSerialized: item.serialized,
         totalStock:
           (nonSerialized?.totalStock || 0) + (serialized?.totalStock || 0),
-        batches: nonSerialized?.batches || [],
+        batches: nonSerialized?.batches || serialized?.batches || [],
         serializedItems: serialized?.batches || [],
       };
     });
