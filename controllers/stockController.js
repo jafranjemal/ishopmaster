@@ -600,11 +600,10 @@ exports.getStockByPurchaseId = async (req, res) => {
   }
 };
 
-exports.getUnifiedStock = async (req, res) => {
+exports.getUnifiedStockOld = async (req, res) => {
   try {
     // Fetch all items
     const items = await Items.find();
- 
 
     const nonSerializedStocks = await NonSerializedStock.aggregate([
       {
@@ -617,7 +616,6 @@ exports.getUnifiedStock = async (req, res) => {
           lastUnitCost: { $last: "$unitCost" }, // Count of available serialized items
           batches: {
             $push: {
-              
               batch_number: "$batch_number",
               availableQty: "$availableQty",
               purchaseDate: "$purchaseDate",
@@ -643,7 +641,7 @@ exports.getUnifiedStock = async (req, res) => {
         $unwind: "$purchase_info",
       },
       {
-        $sort: { "batches.purchaseDate": -1 } // Sort by purchaseDate
+        $sort: { "batches.purchaseDate": -1 }, // Sort by purchaseDate
       },
       {
         $lookup: {
@@ -658,16 +656,15 @@ exports.getUnifiedStock = async (req, res) => {
       },
       {
         $group: {
-          _id:   "$item_id" ,
+          _id: "$item_id",
           totalStock: { $first: "$totalStock" },
           totalSold: { $first: "$soldQty" }, // Sum of availableQty
 
-          
           lastSellingPrice: { $first: "$lastSellingPrice" },
           lastUnitCost: { $first: "$lastUnitCost" },
           batches: {
             $push: {
-              item_id:  "$item_id" ,
+              item_id: "$item_id",
               batch_number: "$batches.batch_number",
               availableQty: "$batches.availableQty",
               purchaseDate: "$batches.purchaseDate",
@@ -680,16 +677,16 @@ exports.getUnifiedStock = async (req, res) => {
           },
         },
       },
-       
+
       { $sort: { totalStock: -1 } },
     ]);
 
-    // console.log(nonSerializedStocks);
+    console.log("nonSerializedStocks ", nonSerializedStocks);
 
     // Fetch serialized stock details
     const serializedStocks = await SerializedStock.aggregate([
       {
-        $match: { status: "Available" } // Filter only available serialized items
+        $match: { status: "Available" }, // Filter only available serialized items
       },
       {
         $group: {
@@ -707,9 +704,9 @@ exports.getUnifiedStock = async (req, res) => {
               unitCost: "$unitCost",
               sellingPrice: "$sellingPrice",
               purchase_id: "$purchase_id",
-            }
-          }
-        }
+            },
+          },
+        },
       },
       { $unwind: "$batches" },
       {
@@ -717,31 +714,31 @@ exports.getUnifiedStock = async (req, res) => {
           from: "purchases", // Name of the purchases collection
           localField: "batches.purchase_id",
           foreignField: "_id",
-          as: "purchase_info"
-        }
+          as: "purchase_info",
+        },
       },
       { $unwind: "$purchase_info" },
       {
-        $sort: { "batches.purchaseDate": -1 } // Sort by purchaseDate
+        $sort: { "batches.purchaseDate": -1 }, // Sort by purchaseDate
       },
       {
         $lookup: {
           from: "suppliers", // Name of the suppliers collection
           localField: "purchase_info.supplier",
           foreignField: "_id",
-          as: "supplier_info"
-        }
+          as: "supplier_info",
+        },
       },
       { $unwind: "$supplier_info" },
       {
         $group: {
-          _id:   "$item_id" ,
+          _id: "$item_id",
           totalStock: { $first: "$totalStock" },
           lastSellingPrice: { $first: "$lastSellingPrice" },
           lastUnitCost: { $first: "$lastUnitCost" },
           batches: {
             $push: {
-              item_id: "$item_id" ,
+              item_id: "$item_id",
               batch_number: "$batches.batch_number",
               serialNumber: "$batches.serialNumber",
               status: "$batches.status",
@@ -750,17 +747,16 @@ exports.getUnifiedStock = async (req, res) => {
               sellingPrice: "$batches.sellingPrice",
               purchase_id: "$batches.purchase_id",
               purchase: "$purchase_info",
-              supplier: "$supplier_info"
-            }
-          }
-        }
+              supplier: "$supplier_info",
+            },
+          },
+        },
       },
-      
-      { $sort: { totalStock: -1 } }
+
+      { $sort: { totalStock: -1 } },
     ]);
-    
-    console.log(serializedStocks);
-    
+
+    console.log("serializedStocks", serializedStocks);
 
     // Map and merge stock data into a unified result
     const result = items.map((item) => {
@@ -793,9 +789,210 @@ exports.getUnifiedStock = async (req, res) => {
       };
     });
 
+    console.log("stock details ", result);
     res.json(result);
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Error fetching unified stock data" });
+  }
+};
+
+exports.getUnifiedStock = async (req, res) => {
+  try {
+    // Fetch all items
+    const items = await Items.find();
+
+    // Non-serialized stock aggregation
+    const nonSerializedStocks = await NonSerializedStock.aggregate([
+      {
+        $group: {
+          _id: "$item_id",
+          item_id: { $last: "$item_id" },
+          totalStock: { $sum: "$availableQty" },
+          totalSold: { $sum: "$soldQty" },
+          lastSellingPrice: { $last: "$sellingPrice" },
+          lastUnitCost: { $last: "$unitCost" },
+          batches: {
+            $push: {
+              batch_number: "$batch_number",
+              availableQty: "$availableQty",
+              purchaseDate: "$purchaseDate",
+              unitCost: "$unitCost",
+              sellingPrice: "$sellingPrice",
+              purchase_id: "$purchase_id",
+            },
+          },
+        },
+      },
+      { $unwind: "$batches" },
+      {
+        $lookup: {
+          from: "purchases",
+          localField: "batches.purchase_id",
+          foreignField: "_id",
+          as: "purchase_info",
+        },
+      },
+      {
+        $unwind: {
+          path: "$purchase_info",
+          preserveNullAndEmptyArrays: true, // Keep docs if no purchase found
+        },
+      },
+      {
+        $lookup: {
+          from: "suppliers",
+          localField: "purchase_info.supplier",
+          foreignField: "_id",
+          as: "supplier_info",
+        },
+      },
+      {
+        $unwind: {
+          path: "$supplier_info",
+          preserveNullAndEmptyArrays: true, // Keep docs if no supplier found
+        },
+      },
+      {
+        $sort: { "batches.purchaseDate": -1 },
+      },
+      {
+        $group: {
+          _id: "$item_id",
+          totalStock: { $first: "$totalStock" },
+          totalSold: { $first: "$totalSold" },
+          lastSellingPrice: { $first: "$lastSellingPrice" },
+          lastUnitCost: { $first: "$lastUnitCost" },
+          batches: {
+            $push: {
+              item_id: "$item_id",
+              batch_number: "$batches.batch_number",
+              availableQty: "$batches.availableQty",
+              purchaseDate: "$batches.purchaseDate",
+              unitCost: "$batches.unitCost",
+              sellingPrice: "$batches.sellingPrice",
+              purchase_id: "$batches.purchase_id",
+              purchase: "$purchase_info",
+              supplier: "$supplier_info",
+            },
+          },
+        },
+      },
+      { $sort: { totalStock: -1 } },
+    ]);
+
+    // Serialized stock aggregation
+    const serializedStocks = await SerializedStock.aggregate([
+      {
+        $match: { status: "Available" },
+      },
+      {
+        $group: {
+          _id: "$item_id",
+          item_id: { $last: "$item_id" },
+          totalStock: { $sum: 1 },
+          lastSellingPrice: { $last: "$sellingPrice" },
+          lastUnitCost: { $last: "$unitCost" },
+          batches: {
+            $push: {
+              batch_number: "$batch_number",
+              serialNumber: "$serialNumber",
+              status: "$status",
+              purchaseDate: "$purchaseDate",
+              unitCost: "$unitCost",
+              sellingPrice: "$sellingPrice",
+              purchase_id: "$purchase_id",
+            },
+          },
+        },
+      },
+      { $unwind: "$batches" },
+      {
+        $lookup: {
+          from: "purchases",
+          localField: "batches.purchase_id",
+          foreignField: "_id",
+          as: "purchase_info",
+        },
+      },
+      {
+        $unwind: {
+          path: "$purchase_info",
+          preserveNullAndEmptyArrays: true, // Keep docs if no purchase found
+        },
+      },
+      {
+        $lookup: {
+          from: "suppliers",
+          localField: "purchase_info.supplier",
+          foreignField: "_id",
+          as: "supplier_info",
+        },
+      },
+      {
+        $unwind: {
+          path: "$supplier_info",
+          preserveNullAndEmptyArrays: true, // Keep docs if no supplier found
+        },
+      },
+      {
+        $sort: { "batches.purchaseDate": -1 },
+      },
+      {
+        $group: {
+          _id: "$item_id",
+          totalStock: { $first: "$totalStock" },
+          lastSellingPrice: { $first: "$lastSellingPrice" },
+          lastUnitCost: { $first: "$lastUnitCost" },
+          batches: {
+            $push: {
+              item_id: "$item_id",
+              batch_number: "$batches.batch_number",
+              serialNumber: "$batches.serialNumber",
+              status: "$batches.status",
+              purchaseDate: "$batches.purchaseDate",
+              unitCost: "$batches.unitCost",
+              sellingPrice: "$batches.sellingPrice",
+              purchase_id: "$batches.purchase_id",
+              purchase: "$purchase_info",
+              supplier: "$supplier_info",
+            },
+          },
+        },
+      },
+      { $sort: { totalStock: -1 } },
+    ]);
+
+    // Map and merge stock data with robust fallbacks
+    const result = items.map((item) => {
+      const nonSerialized = nonSerializedStocks.find(
+        (stock) => stock._id && stock._id.toString() === item._id.toString()
+      );
+
+      const serialized = serializedStocks.find(
+        (stock) => stock._id && stock._id.toString() === item._id.toString()
+      );
+
+      return {
+        ...item.toObject(),
+        lastSellingPrice:
+          nonSerialized?.lastSellingPrice || serialized?.lastSellingPrice || 0,
+        lastUnitCost:
+          nonSerialized?.lastUnitCost || serialized?.lastUnitCost || 0,
+        isSerialized: item.serialized,
+        totalStock:
+          (nonSerialized?.totalStock || 0) + (serialized?.totalStock || 0),
+        batches: nonSerialized?.batches || [],
+        serializedItems: serialized?.batches || [],
+      };
+    });
+
+    res.json(result);
+  } catch (error) {
+    console.error("Error in getUnifiedStock:", error);
+    res.status(500).json({
+      message: "Error fetching unified stock data",
+      error: error.message,
+    });
   }
 };
