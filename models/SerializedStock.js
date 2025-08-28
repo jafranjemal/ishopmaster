@@ -1,6 +1,8 @@
 const mongoose = require("mongoose");
 
 const SerializedStockSchema = new mongoose.Schema({
+   variant_id: { type: mongoose.Schema.Types.ObjectId, ref: "ItemVariant" },
+    
   item_id: { type: mongoose.Schema.Types.ObjectId, ref: "Item", required: true },
   purchase_id: { type: mongoose.Schema.Types.ObjectId, ref: "Purchase", required: true },
   serialNumber: { type: String, required: true, unique: true }, // Unique identifier like IMEI
@@ -10,6 +12,21 @@ const SerializedStockSchema = new mongoose.Schema({
   sellingPrice: { type: Number, required: true }, // Selling price per unit
   purchaseDate: { type: Date, required: true },
   sold_date: { type: Date }, // Date of sale (if applicable)
+
+      ramSize: { type: String }, // RAM size
+      storageSize: { type: String }, // Storage size
+      displaySize: { type: String }, // Display size
+      rearCamera: { type: String }, // Rear camera pixels
+      frontCamera: { type: String }, // Front camera pixels
+      fingerprint: { type: Boolean }, // Fingerprint availability
+      networkType: { type: String }, // Supported networks (e.g., 4G, 5G)
+      simType: { type: String }, // SIM type (e.g., Nano)
+      batteryCapacity: { type: Number }, // Number of SIM slots
+      batteryHealth: { type: Number }, // Number of SIM slots
+      condition: { type: String, enum: ["Brand New", "Like New", "Used", "Damaged"] },
+    
+  notes: { type: String }, // Additional notes about the item
+
 }, { timestamps: true });
 
 module.exports = mongoose.model("SerializedStock", SerializedStockSchema);

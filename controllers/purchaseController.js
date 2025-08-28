@@ -1,10 +1,12 @@
 const Purchase = require("../models/Purchase");
 const Stock = require("../models/Stock");
 const Account = require("../models/Account");
+const ItemVariant = require("../models/ItemVariantSchema");
 const Transaction = require("../models/Transaction");
 const mongoose = require("mongoose");
 const SerializedStock = require("../models/SerializedStock");
 const NonSerializedStock = require("../models/NonSerializedStock");
+const Item = require("../models/Items");
 
 // Create a new purchase
 exports.createPurchase_old = async (req, res) => {
@@ -62,10 +64,72 @@ exports.createPurchase_old = async (req, res) => {
 exports.createPurchase = async (req, res) => {
   //const session = await mongoose.startSession();
   // session.startTransaction();
+//console.log("create purchase api called");
+  console.log("🔥 createPurchase controller START", new Date().toISOString());
+ 
 
   try {
     const purchaseData = req.body;
+    let variant;
+    // STEP 1: Process items to find or create variants BEFORE saving the purchase
+    for (const item of purchaseData.purchasedItems) {
+      if (item.isSerialized && item.variantAttributes) {
+        // Find the base item to get its name
+        const baseItem = await Item.findById(item.item_id);
+        if (!baseItem) {
+          throw new Error(`Item with ID ${item.item_id} not found.`);
+        }
 
+        if(!item.sellingPrice)  throw new Error(`Item with sellingPrice: ${item.sellingPrice} not found.`);
+
+        // Create a consistent, searchable name for the variant
+        // e.g., "APPLE IPHONE 12 PRO - COLOR:ROSE GOLD-STORAGE:256GB"
+        // const attributesString = Object.entries(item.variantAttributes)
+        //   .map(([key, value]) => `${value.toUpperCase()}`)
+        //   .sort()
+        //   .join('-');
+
+        const attributesString = (item.variantAttributes || [])
+          .map((attr) => attr.value.toUpperCase())
+          .sort()
+          .join("-");
+
+        const variantName = `${baseItem.itemName} - ${attributesString}`;
+
+        console.log("item.itemName", item.itemName) 
+        console.log("variantName", variantName) 
+        // Use findOneAndUpdate with upsert to find an existing variant or create a new one
+        variant = await ItemVariant.findOneAndUpdate(
+          {
+            item_id: item.item_id,
+            variantName: variantName, // Use the unique name to find the variant
+          },
+          {
+            $setOnInsert: {
+              item_id: item.item_id,
+              variantAttributes: item.variantAttributes,
+              variantName: variantName,
+              defaultSellingPrice: item.sellingPrice, // Set initial default price
+              lastUnitCost: item.unitCost, // Set initial cost
+            },
+          },
+          {
+            upsert: true, // Create the document if it doesn't exist
+            new: true, // Return the new or updated document
+            // session // Pass session if using transactions
+          }
+        );
+
+        console.log("founded varient ", variant)
+       // console.log("variant found/created: ", variant);
+        // Attach the found/created variant's ID to the item for later use
+        item.variant_id = variant._id;
+
+       // console.log("item after variant assignment: ", item.variant_id);
+      }
+    }
+
+   // console.log("all items after variant processing: ", purchaseData.purchasedItems);
     const batchNo = `BATCH-${Date.now()}-${Math.random()
       .toString(36)
       .substring(2, 8)
@@ -77,87 +141,92 @@ exports.createPurchase = async (req, res) => {
 
     purchaseData.purchasedItems = purchaseData.purchasedItems.map((item) => {
       // If the item is serialized, also assign batch number to each serialized item
+
+      console.log("item.variant_id ", item.variant_id)
       if (item.isSerialized && item.serializedItems) {
         item.serializedItems = item.serializedItems.map((itm) => ({
           ...itm,
+        variant_id :  item.variant_id,
+
           batch_number: batchNo,
         }));
-      } 
+      }
 
       return {
         ...item,
+        variant_id :  item.variant_id,
         batch_number: batchNo,
       };
     });
 
-    
+    // STEP 2: Save the purchase with the enriched item data
+    //const purchase = new Purchase(purchaseData);
+    //await purchase.save();
+    console.log("purchaseData ", purchaseData.purchasedItems.map(x=> x.serializedItems));
+    const purchase = await Purchase.create(purchaseData);
+   // console.log("\n\n purchased saved success ", purchase);
+    // STEP 3: Update Stock using the now-saved purchase and variant IDs
 
-    // Save the purchase
-    const purchase = new Purchase(purchaseData);
-    await purchase.save();
-
-    // Update Stock
+    // STEP 3: Update Stock using the now-saved purchase and variant IDs
     for (const item of purchase.purchasedItems) {
-      // Find all existing stock entries for this item_id
-      let existingStockEntries;
-      let beforePurchaseAvailable_qty = 0;
-
-      if (item.isSerialized) {
-        // If item is serialized, query the SerializedStock collection
-        existingStockEntries = await SerializedStock.find({
-          item_id: item.item_id,
-          status: "Available",
-        });
-
-        // Sum up the available quantities to get the total stock before this purchase (only serialized items)
-        beforePurchaseAvailable_qty = existingStockEntries.length;
-      } else {
-        // If item is non-serialized, query the NonSerializedStock collection
-        existingStockEntries = await NonSerializedStock.find({
-          item_id: item.item_id,
-        });
-
-        // Sum up the available quantities to get the total stock before this purchase (only non-serialized items)
-        beforePurchaseAvailable_qty = existingStockEntries.reduce(
-          (sum, stock) => sum + stock.availableQty,
-          0
-        );
-      }
-
       if (item.isSerialized) {
         // Handle serialized items
         if (item.serializedItems && item.serializedItems.length > 0) {
-          for (const serializedItem of item.serializedItems) {
-            // Create a new stock entry for each serialized item
-            await SerializedStock.create({
-              item_id: item.item_id,
-              purchase_id: purchase._id,
-              serialNumber: serializedItem.serialNumber, // Assuming serializedItem has a serialNumber field
-              batch_number: item.batch_number,
-              purchaseDate: purchase.purchaseDate,
-              unitCost: serializedItem.unitCost,
-              sellingPrice: serializedItem.sellingPrice,
-              status: "Available", // Set status based on the initial state of the serialized item
-            }); 
+          for (const serializedUnit of item.serializedItems) {
+            // Create a stock entry for each unique physical unit
+            console.log("serializedUnit ", serializedUnit)
+            await SerializedStock.create(
+              [
+                {
+                  item_id: item.item_id,
+                  variant_id: serializedUnit.variant_id, // ✅ Link to the variant
+                  purchase_id: purchase._id,
+                  serialNumber: serializedUnit.serialNumber,
+                  batch_number: item.batch_number,
+                  purchaseDate: purchase.purchaseDate,
+                  unitCost: serializedUnit.unitCost,
+                  sellingPrice: serializedUnit.sellingPrice,
+                  status: "Available",
+
+                  // ✅ Save unit-specific data
+                  batteryHealth: serializedUnit.batteryHealth,
+                  condition: serializedUnit.condition,
+                },
+              ]
+              // { session } // Pass session if using transactions
+            );
           }
         }
       } else {
-        // Handle non-serialized items
-        await NonSerializedStock.create({
+        // Handle non-serialized items (Backward compatibility)
+        const existingStockEntries = await NonSerializedStock.find({
           item_id: item.item_id,
-          purchase_id: purchase._id,
-          batch_number: item.batch_number,
-          purchaseDate: purchase.purchaseDate,
-          purchaseQty: item.purchaseQty,
-          availableQty: item.purchaseQty,
-          beforePurchaseAvailableQty: beforePurchaseAvailable_qty,
-          unitCost: item.unitCost,
-          sellingPrice: item.sellingPrice,
-          unit: item.unit,
         });
+        const beforePurchaseAvailable_qty = existingStockEntries.reduce(
+          (sum, stock) => sum + stock.availableQty,
+          0
+        );
+
+        await NonSerializedStock.create(
+          [
+            {
+              item_id: item.item_id,
+              purchase_id: purchase._id,
+              batch_number: item.batch_number,
+              purchaseDate: purchase.purchaseDate,
+              purchaseQty: item.purchaseQty,
+              availableQty: item.purchaseQty,
+              beforePurchaseAvailableQty: beforePurchaseAvailable_qty,
+              unitCost: item.unitCost,
+              sellingPrice: item.sellingPrice,
+              unit: item.unit,
+            },
+          ]
+          // { session } // Pass session if using transactions
+        );
       }
     }
-    //end of stock update
+    // STEP 4: Update Supplier Account
 
     // Find the supplier account
     const supplierAccount = await Account.findOne({
@@ -169,7 +238,6 @@ exports.createPurchase = async (req, res) => {
       throw new Error("Supplier account not found.");
     }
 
-    
     // Calculate the new due amount by adding the current grand total to the existing balance
     const newDueAmount = supplierAccount.balance - purchase.grand_total; // Subtract purchase grand total from existing balance
 
@@ -181,7 +249,7 @@ exports.createPurchase = async (req, res) => {
     // Record the transaction
     const transaction = new Transaction({
       account_id: supplierAccount._id,
-      amount: purchase.grand_total *-1,
+      amount: purchase.grand_total * -1,
       transaction_type: "Withdrawal",
       reason: `Purchase: ${purchase.referenceNumber}`,
       transaction_date: new Date(),
@@ -199,6 +267,7 @@ exports.createPurchase = async (req, res) => {
   } catch (error) {
     //await session.abortTransaction();
     //session.endSession();
+      console.error("🔥 createPurchase controller ERROR", error);
     console.error("Error creating purchase:", error);
     res.status(500).json({ message: "Error creating purchase", error });
   }
@@ -235,11 +304,15 @@ exports.getPurchaseById = async (req, res) => {
 exports.getDuePurchaseBySupplierId = async (req, res) => {
   try {
     const { id } = req.params;
-const purchases = await Purchase.find({ 'supplier': id, 'payment_due_amount': { $gt: 0 } })
-.populate("supplier")
-.populate("purchasedItems.item_id").sort({
-  _id:-1
-})
+    const purchases = await Purchase.find({
+      supplier: id,
+      payment_due_amount: { $gt: 0 },
+    })
+      .populate("supplier")
+      .populate("purchasedItems.item_id")
+      .sort({
+        _id: -1,
+      });
     if (purchases.length === 0) {
       return res.status(404).json({ message: "Purchase not found" });
     }
@@ -260,7 +333,9 @@ exports.updatePurchaseSellingPrice = async (req, res) => {
     // Validate request body
     const { purchasedItems } = req.body;
     if (!Array.isArray(purchasedItems) || purchasedItems.length === 0) {
-      return res.status(400).json({ message: "Updated purchase items are required" });
+      return res
+        .status(400)
+        .json({ message: "Updated purchase items are required" });
     }
 
     // Find existing purchase
@@ -275,12 +350,12 @@ exports.updatePurchaseSellingPrice = async (req, res) => {
 
     // Fetch all relevant serialized and non-serialized stocks at once
     const serializedItemIds = purchasedItems
-      .filter(item => item.isSerialized)
-      .map(item => item.item_id._id);
-    
+      .filter((item) => item.isSerialized)
+      .map((item) => item.item_id._id);
+
     const nonSerializedItemIds = purchasedItems
-      .filter(item => !item.isSerialized)
-      .map(item => item.item_id._id);
+      .filter((item) => !item.isSerialized)
+      .map((item) => item.item_id._id);
 
     const existingSerializedStocks = await SerializedStock.find({
       item_id: { $in: serializedItemIds },
@@ -294,11 +369,14 @@ exports.updatePurchaseSellingPrice = async (req, res) => {
 
     // Convert fetched stocks into maps for fast lookup
     const serializedStockMap = new Map(
-      existingSerializedStocks.map(stock => [stock.serialNumber, stock])
+      existingSerializedStocks.map((stock) => [stock.serialNumber, stock])
     );
 
     const nonSerializedStockMap = new Map(
-      existingNonSerializedStocks.map(stock => [stock.item_id.toString(), stock])
+      existingNonSerializedStocks.map((stock) => [
+        stock.item_id.toString(),
+        stock,
+      ])
     );
 
     // Process updates for both serialized and non-serialized stock
@@ -307,34 +385,50 @@ exports.updatePurchaseSellingPrice = async (req, res) => {
     for (const item of purchasedItems) {
       if (item.isSerialized) {
         for (const serializedItem of item.serializedItems) {
-          const existingSerializedStock = serializedStockMap.get(serializedItem.serialNumber);
+          const existingSerializedStock = serializedStockMap.get(
+            serializedItem.serialNumber
+          );
 
           if (existingSerializedStock) {
             // Check if serial number changed
-            if (existingSerializedStock.serialNumber !== serializedItem.serialNumber) {
-              const serialExists = serializedStockMap.has(serializedItem.serialNumber);
+            if (
+              existingSerializedStock.serialNumber !==
+              serializedItem.serialNumber
+            ) {
+              const serialExists = serializedStockMap.has(
+                serializedItem.serialNumber
+              );
               if (serialExists) {
-                console.warn(`Duplicate serial number detected: ${serializedItem.serialNumber}`);
+                console.warn(
+                  `Duplicate serial number detected: ${serializedItem.serialNumber}`
+                );
                 continue; // Skip update
               }
-              existingSerializedStock.serialNumber = serializedItem.serialNumber;
+              existingSerializedStock.serialNumber =
+                serializedItem.serialNumber;
             }
 
             // Update selling price
             existingSerializedStock.sellingPrice = serializedItem.sellingPrice;
             updatePromises.push(existingSerializedStock.save());
           } else {
-            console.warn(`Serialized stock not found for item ${item.item_id.itemName}`);
+            console.warn(
+              `Serialized stock not found for item ${item.item_id.itemName}`
+            );
           }
         }
       } else {
-        const existingNonSerializedStock = nonSerializedStockMap.get(item.item_id.toString());
+        const existingNonSerializedStock = nonSerializedStockMap.get(
+          item.item_id.toString()
+        );
 
         if (existingNonSerializedStock) {
           existingNonSerializedStock.sellingPrice = item.sellingPrice;
           updatePromises.push(existingNonSerializedStock.save());
         } else {
-          console.warn(`Non-serialized stock not found for item ${item.item_id.itemName}`);
+          console.warn(
+            `Non-serialized stock not found for item ${item.item_id.itemName}`
+          );
         }
       }
     }
@@ -342,14 +436,19 @@ exports.updatePurchaseSellingPrice = async (req, res) => {
     // Execute all update operations in parallel
     await Promise.all(updatePromises);
 
-    res.status(200).json({ message: "Purchase updated successfully", purchase: existingPurchase });
+    res
+      .status(200)
+      .json({
+        message: "Purchase updated successfully",
+        purchase: existingPurchase,
+      });
   } catch (error) {
     console.error("Error updating purchase:", error);
-    res.status(500).json({ message: "Error updating purchase", error: error.message });
+    res
+      .status(500)
+      .json({ message: "Error updating purchase", error: error.message });
   }
 };
-
-
 
 exports.updatePurchase = async (req, res) => {
   try {
@@ -358,7 +457,7 @@ exports.updatePurchase = async (req, res) => {
 
     const existingPurchase = await Purchase.findById(purchaseId);
     if (!existingPurchase) {
-      return res.status(404).json({ message: 'Purchase not found' });
+      return res.status(404).json({ message: "Purchase not found" });
     }
 
     // Reverse stock changes
@@ -373,18 +472,21 @@ exports.updatePurchase = async (req, res) => {
     // Reverse supplier account changes
     const supplierAccount = await Account.findOne({
       account_owner_type: "Supplier",
-      related_party_id: existingPurchase.supplier
+      related_party_id: existingPurchase.supplier,
     });
 
     if (!supplierAccount) {
-      return res.status(404).json({ message: 'Supplier account not found' });
+      return res.status(404).json({ message: "Supplier account not found" });
     }
 
     supplierAccount.balance += existingPurchase.grand_total;
     await supplierAccount.save();
 
     // Update purchase data
-    const batchNo = `BATCH-${Date.now()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+    const batchNo = `BATCH-${Date.now()}-${Math.random()
+      .toString(36)
+      .substring(2, 8)
+      .toUpperCase()}`;
     purchaseData.purchasedItems = purchaseData.purchasedItems.map((item) => {
       if (item.isSerialized && item.serializedItems) {
         item.serializedItems = item.serializedItems.map((itm) => ({
@@ -398,7 +500,11 @@ exports.updatePurchase = async (req, res) => {
       };
     });
 
-    const updatedPurchase = await Purchase.findByIdAndUpdate(purchaseId, purchaseData, { new: true });
+    const updatedPurchase = await Purchase.findByIdAndUpdate(
+      purchaseId,
+      purchaseData,
+      { new: true }
+    );
 
     // Update stock
     for (const item of updatedPurchase.purchasedItems) {
@@ -434,12 +540,12 @@ exports.updatePurchase = async (req, res) => {
     supplierAccount.balance -= updatedPurchase.grand_total;
     await supplierAccount.save();
 
-        // Remove transaction record
-        await Transaction.deleteOne({
-          account_id: supplierAccount._id,
-          amount: existingPurchase.grand_total * -1,
-          reason: `Purchase: ${existingPurchase.referenceNumber}`
-        });
+    // Remove transaction record
+    await Transaction.deleteOne({
+      account_id: supplierAccount._id,
+      amount: existingPurchase.grand_total * -1,
+      reason: `Purchase: ${existingPurchase.referenceNumber}`,
+    });
 
     // Record the transaction
     const transaction = new Transaction({
@@ -453,7 +559,12 @@ exports.updatePurchase = async (req, res) => {
 
     await transaction.save();
 
-    res.status(200).json({ message: "Purchase updated successfully", purchase: updatedPurchase });
+    res
+      .status(200)
+      .json({
+        message: "Purchase updated successfully",
+        purchase: updatedPurchase,
+      });
   } catch (error) {
     console.error("Error updating purchase:", error);
     res.status(500).json({ message: "Error updating purchase", error });
@@ -466,12 +577,16 @@ exports.deletePurchase = async (req, res) => {
 
     const existingPurchase = await Purchase.findById(purchaseId);
     if (!existingPurchase) {
-      return res.status(404).json({ message: 'Purchase not found' });
+      return res.status(404).json({ message: "Purchase not found" });
     }
 
     // Check payment status
-    if (existingPurchase.payment_status !== 'Not Paid') {
-      return res.status(400).json({ message: 'Only purchases with "Not Paid" status can be deleted' });
+    if (existingPurchase.payment_status !== "Not Paid") {
+      return res
+        .status(400)
+        .json({
+          message: 'Only purchases with "Not Paid" status can be deleted',
+        });
     }
 
     // Reverse stock changes
@@ -486,11 +601,11 @@ exports.deletePurchase = async (req, res) => {
     // Reverse supplier account changes
     const supplierAccount = await Account.findOne({
       account_owner_type: "Supplier",
-      related_party_id: existingPurchase.supplier
+      related_party_id: existingPurchase.supplier,
     });
 
     if (!supplierAccount) {
-      return res.status(404).json({ message: 'Supplier account not found' });
+      return res.status(404).json({ message: "Supplier account not found" });
     }
 
     supplierAccount.balance += existingPurchase.grand_total;
@@ -503,7 +618,7 @@ exports.deletePurchase = async (req, res) => {
     await Transaction.deleteOne({
       account_id: supplierAccount._id,
       amount: existingPurchase.grand_total * -1,
-      reason: `Purchase: ${existingPurchase.referenceNumber}`
+      reason: `Purchase: ${existingPurchase.referenceNumber}`,
     });
 
     res.status(200).json({ message: "Purchase deleted successfully" });

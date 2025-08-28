@@ -90,4 +90,5 @@ ItemSchema.pre('save', function(next) {
   }
   next();
 });
-module.exports = mongoose.model("Item", ItemSchema);
+const Item = mongoose.model("Item", ItemSchema);
+module.exports = Item

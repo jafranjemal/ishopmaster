@@ -28,7 +28,7 @@ const purchaseSchema = new mongoose.Schema({
       purchaseQty: { type: Number, required: true },
       discount: { type: Number, default: 0 },
       unitCost: { type: Number, required: true },
-      unit: { type: String, required: true },
+      unit: { type: String, default: "pcs" },
       total_price: { type: Number, required: true },
       profitMargin: { type: Number, required: false },
       sellingPrice: { type: Number, required: true },

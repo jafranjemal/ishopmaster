@@ -5,6 +5,7 @@ const moment = require("moment"); // To calculate the stock age (optional)
 const NonSerializedStock = require("../models/NonSerializedStock");
 const SerializedStock = require("../models/SerializedStock");
 const Items = require("../models/Items");
+const ItemVariant = require("../models/ItemVariantSchema");
 
 exports.getItemStockDetails = async (req, res) => {
   try {
@@ -600,7 +601,7 @@ exports.getStockByPurchaseId = async (req, res) => {
   }
 };
 
-exports.getUnifiedStockOld = async (req, res) => {
+exports.getUnifiedStock1 = async (req, res) => {
   try {
     // Fetch all items
     const items = await Items.find();
@@ -797,7 +798,7 @@ exports.getUnifiedStockOld = async (req, res) => {
   }
 };
 
-exports.getUnifiedStock = async (req, res) => {
+exports.getUnifiedStock2 = async (req, res) => {
   try {
     // Fetch all items
     const items = await Items.find();
@@ -882,22 +883,227 @@ exports.getUnifiedStock = async (req, res) => {
     ]);
 
     // Serialized stock aggregation
-    const serializedStocks = await SerializedStock.aggregate([
-      {
-        $match: { status: "Available" },
+  // Serialized stock aggregation with corrections
+   const serializedStocks = await SerializedStock.aggregate([
+  { $match: { status: "Available" } },
+  
+  // Lookup variant info - Fixed to use correct field mapping
+  {
+    $lookup: {
+      from: "itemvariants",
+      localField: "variant_id",
+      foreignField: "_id",
+      as: "variantInfo"
+    }
+  },
+  { $unwind: { path: "$variantInfo", preserveNullAndEmptyArrays: true } },
+  
+  // Lookup item info
+  {
+    $lookup: {
+      from: "items",
+      localField: "item_id",
+      foreignField: "_id",
+      as: "itemInfo",
+    }
+  },
+  { $unwind: { path: "$itemInfo", preserveNullAndEmptyArrays: true } },
+
+  // Group per item + variant to compute stock per variant - FIXED
+  {
+    $group: {
+      _id: {
+        item_id: "$item_id",
+        variant_id: "$variantInfo._id" // Use variant ID from ItemVariant, not SerializedStock
       },
+      item_id: { $first: "$item_id" },
+      variant_id: { $first: "$variantInfo._id" }, // Use variant ID from ItemVariant
+      displayName: { 
+        $first: { 
+          $ifNull: ["$variantInfo.variantName", "$itemInfo.itemName"] 
+        } 
+      },
+      isVariant: { 
+        $first: { 
+          $cond: [{ $ifNull: ["$variantInfo._id", false] }, true, false] 
+        } 
+      },
+      attributes: { $first: "$variantInfo.variantAttributes" },
+      itemDetails: { $first: "$itemInfo" },
+      totalStock: { $sum: 1 }, // Correct variant-level count
+      stockUnits: {
+        $push: {
+          _id: "$_id",
+          serialNumber: "$serialNumber",
+          unitCost: "$unitCost",
+          sellingPrice: "$sellingPrice",
+          batteryHealth: "$batteryHealth",
+          condition: "$condition"
+        }
+      },
+      batches: {
+        $push: {
+          batch_number: "$batch_number",
+          serialNumber: "$serialNumber",
+          batteryHealth: "$batteryHealth",
+          status: "$status",
+          purchaseDate: "$purchaseDate",
+          unitCost: "$unitCost",
+          sellingPrice: "$sellingPrice",
+          purchase_id: "$purchase_id"
+        }
+      },
+      lastSellingPrice: { $last: "$sellingPrice" },
+      lastUnitCost: { $last: "$unitCost" }
+    }
+  },
+
+  // Process batches with lookups
+  { $unwind: "$batches" },
+  {
+    $lookup: {
+      from: "purchases",
+      localField: "batches.purchase_id",
+      foreignField: "_id",
+      as: "purchase_info"
+    }
+  },
+  { $unwind: { path: "$purchase_info", preserveNullAndEmptyArrays: true } },
+  {
+    $lookup: {
+      from: "suppliers",
+      localField: "purchase_info.supplier",
+      foreignField: "_id",
+      as: "supplier_info"
+    }
+  },
+  { $unwind: { path: "$supplier_info", preserveNullAndEmptyArrays: true } },
+
+  // Regroup to maintain variant-level stock
+  {
+    $group: {
+      _id: {
+        item_id: "$item_id",
+        variant_id: "$variant_id"
+      },
+      item_id: { $first: "$item_id" },
+      variant_id: { $first: "$variant_id" },
+      displayName: { $first: "$displayName" },
+      isVariant: { $first: "$isVariant" },
+      attributes: { $first: "$attributes" },
+      itemDetails: { $first: "$itemDetails" },
+      totalStock: { $first: "$totalStock" }, // Preserve variant stock
+      lastSellingPrice: { $first: "$lastSellingPrice" },
+      lastUnitCost: { $first: "$lastUnitCost" },
+      stockUnits: { $first: "$stockUnits" },
+      batches: {
+        $push: {
+          batch_number: "$batches.batch_number",
+          serialNumber: "$batches.serialNumber",
+          status: "$batches.status",
+          purchaseDate: "$batches.purchaseDate",
+          unitCost: "$batches.unitCost",
+          sellingPrice: "$batches.sellingPrice",
+          purchase_id: "$batches.purchase_id",
+          purchase: "$purchase_info",
+          supplier: "$supplier_info"
+        }
+      }
+    }
+  },
+
+  // Final projection
+  {
+    $project: {
+      _id: "$item_id",
+      variant_id: 1,
+      displayName: 1,
+      isVariant: 1,
+      attributes: 1,
+      itemDetails: 1,
+      totalStock: 1,
+      lastSellingPrice: 1,
+      lastUnitCost: 1,
+      stockUnits: 1,
+      batches: 1
+    }
+  },
+  { $sort: { totalStock: -1 } }
+]);
+
+
+
+
+    console.log("serializedStocks", serializedStocks.filter(x=>x.itemDetails.category=== 'Device'));
+
+    // Map and merge stock data with robust fallbacks
+    // Modified merging logic to handle variants
+    const result = items.flatMap((item) => {
+      const nonSerialized = nonSerializedStocks.find(
+        (stock) => stock._id.toString() === item._id.toString()
+      );
+      
+      const serializedVariants = serializedStocks.filter(
+        (stock) => stock._id.toString() === item._id.toString()
+      );
+
+      // Return base item with non-serialized stock
+      const baseItem = {
+        ...item.toObject(),
+        itemName: item.itemName,
+        lastSellingPrice: nonSerialized?.lastSellingPrice || 0,
+        lastUnitCost: nonSerialized?.lastUnitCost || 0,
+        isSerialized: item.serialized,
+        totalStock: nonSerialized?.totalStock || 0,
+        batches: nonSerialized?.batches || [],
+        serializedItems: []
+      };
+
+      // Create entries for each variant
+      const variants = serializedVariants.map((variant) => ({
+        ...baseItem,
+        variant_id: variant.variant_id,
+        displayName: variant.displayName,
+        isVariant: true,
+        attributes: variant.attributes,
+        totalStock: variant.totalStock,
+        lastSellingPrice: variant.lastSellingPrice,
+        lastUnitCost: variant.lastUnitCost,
+        batches: variant.batches,
+        serializedItems: variant.stockUnits
+      }));
+
+      return variants.length > 0 ? variants : [baseItem];
+    });
+
+    res.json(result);
+  } catch (error) {
+    console.error("Error in getUnifiedStock:", error);
+    res.status(500).json({
+      message: "Error fetching unified stock data",
+      error: error.message,
+    });
+  }
+};
+exports.getUnifiedStock3 = async (req, res) => {
+  try {
+    // Fetch all items
+    const items = await Items.find();
+
+    // Non-serialized stock aggregation (same as before)
+    const nonSerializedStocks = await NonSerializedStock.aggregate([
       {
         $group: {
           _id: "$item_id",
           item_id: { $last: "$item_id" },
-          totalStock: { $sum: 1 },
+          totalStock: { $sum: "$availableQty" },
+          totalSold: { $sum: "$soldQty" },
           lastSellingPrice: { $last: "$sellingPrice" },
           lastUnitCost: { $last: "$unitCost" },
           batches: {
             $push: {
               batch_number: "$batch_number",
-              serialNumber: "$serialNumber",
-              status: "$status",
+              availableQty: "$availableQty",
               purchaseDate: "$purchaseDate",
               unitCost: "$unitCost",
               sellingPrice: "$sellingPrice",
@@ -915,12 +1121,7 @@ exports.getUnifiedStock = async (req, res) => {
           as: "purchase_info",
         },
       },
-      {
-        $unwind: {
-          path: "$purchase_info",
-          preserveNullAndEmptyArrays: true, // Keep docs if no purchase found
-        },
-      },
+      { $unwind: { path: "$purchase_info", preserveNullAndEmptyArrays: true } },
       {
         $lookup: {
           from: "suppliers",
@@ -929,27 +1130,20 @@ exports.getUnifiedStock = async (req, res) => {
           as: "supplier_info",
         },
       },
-      {
-        $unwind: {
-          path: "$supplier_info",
-          preserveNullAndEmptyArrays: true, // Keep docs if no supplier found
-        },
-      },
-      {
-        $sort: { "batches.purchaseDate": -1 },
-      },
+      { $unwind: { path: "$supplier_info", preserveNullAndEmptyArrays: true } },
+      { $sort: { "batches.purchaseDate": -1 } },
       {
         $group: {
           _id: "$item_id",
           totalStock: { $first: "$totalStock" },
+          totalSold: { $first: "$totalSold" },
           lastSellingPrice: { $first: "$lastSellingPrice" },
           lastUnitCost: { $first: "$lastUnitCost" },
           batches: {
             $push: {
               item_id: "$item_id",
               batch_number: "$batches.batch_number",
-              serialNumber: "$batches.serialNumber",
-              status: "$batches.status",
+              availableQty: "$batches.availableQty",
               purchaseDate: "$batches.purchaseDate",
               unitCost: "$batches.unitCost",
               sellingPrice: "$batches.sellingPrice",
@@ -963,28 +1157,115 @@ exports.getUnifiedStock = async (req, res) => {
       { $sort: { totalStock: -1 } },
     ]);
 
-    // Map and merge stock data with robust fallbacks
-    const result = items.map((item) => {
+    // Serialized stock aggregation (variant aware)
+    const serializedStocks = await SerializedStock.aggregate([
+      { $match: { status: "Available" } },
+      {
+        $lookup: {
+          from: "itemvariants",
+          localField: "variant_id",
+          foreignField: "_id",
+          as: "variantInfo",
+        },
+      },
+      { $unwind: { path: "$variantInfo", preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: "items",
+          localField: "item_id",
+          foreignField: "_id",
+          as: "itemInfo",
+        },
+      },
+      { $unwind: { path: "$itemInfo", preserveNullAndEmptyArrays: true } },
+      {
+        $group: {
+          _id: {
+            item_id: "$item_id",
+            variant_id: "$variantInfo._id",
+          },
+          item_id: { $first: "$item_id" },
+          variant_id: { $first: "$variantInfo._id" },
+          displayName: {
+            $first: {
+              $ifNull: ["$variantInfo.variantName", "$itemInfo.itemName"],
+            },
+          },
+          isVariant: {
+            $first: {
+              $cond: [{ $ifNull: ["$variantInfo._id", false] }, true, false],
+            },
+          },
+          attributes: { $first: "$variantInfo.variantAttributes" },
+          itemDetails: { $first: "$itemInfo" },
+          totalStock: { $sum: 1 },
+          stockUnits: {
+            $push: {
+              _id: "$_id",
+              serialNumber: "$serialNumber",
+              unitCost: "$unitCost",
+              sellingPrice: "$sellingPrice",
+              batteryHealth: "$batteryHealth",
+              condition: "$condition",
+            },
+          },
+          batches: {
+            $push: {
+              batch_number: "$batch_number",
+              serialNumber: "$serialNumber",
+              status: "$status",
+              purchaseDate: "$purchaseDate",
+              unitCost: "$unitCost",
+              sellingPrice: "$sellingPrice",
+              purchase_id: "$purchase_id",
+            },
+          },
+          lastSellingPrice: { $last: "$sellingPrice" },
+          lastUnitCost: { $last: "$unitCost" },
+        },
+      },
+      { $sort: { "batches.purchaseDate": -1 } },
+    ]);
+
+    // Merge items with both non-serialized & serialized stock
+    const result = items.flatMap((item) => {
       const nonSerialized = nonSerializedStocks.find(
-        (stock) => stock._id && stock._id.toString() === item._id.toString()
+        (stock) => stock._id.toString() === item._id.toString()
       );
 
-      const serialized = serializedStocks.find(
-        (stock) => stock._id && stock._id.toString() === item._id.toString()
+      const serializedVariants = serializedStocks.filter(
+        (stock) => stock.item_id.toString() === item._id.toString()
       );
 
-      return {
-        ...item.toObject(),
-        lastSellingPrice:
-          nonSerialized?.lastSellingPrice || serialized?.lastSellingPrice || 0,
-        lastUnitCost:
-          nonSerialized?.lastUnitCost || serialized?.lastUnitCost || 0,
-        isSerialized: item.serialized,
-        totalStock:
-          (nonSerialized?.totalStock || 0) + (serialized?.totalStock || 0),
-        batches: nonSerialized?.batches || serialized?.batches || [],
-        serializedItems: serialized?.batches || [],
-      };
+      if (serializedVariants.length > 0) {
+        // ✅ Replace base item with variant rows
+        return serializedVariants.map((variant) => ({
+          _id: item._id, // all variants share same item_id
+          variant_id: variant.variant_id,
+          itemName: variant.displayName, // use variant name
+          attributes: variant.attributes,
+          category: item.category,
+          isVariant: true,
+          totalStock: variant.totalStock,
+          lastSellingPrice: variant.lastSellingPrice,
+          lastUnitCost: variant.lastUnitCost,
+          batches: variant.batches,
+          serializedItems: variant.stockUnits,
+          itemDetails: variant.itemDetails,
+        }));
+      } else {
+        // Fallback to base item
+        return {
+          ...item.toObject(),
+          itemName: item.itemName,
+          isVariant: false,
+          totalStock: nonSerialized?.totalStock || 0,
+          lastSellingPrice: nonSerialized?.lastSellingPrice || 0,
+          lastUnitCost: nonSerialized?.lastUnitCost || 0,
+          batches: nonSerialized?.batches || [],
+          serializedItems: [],
+        };
+      }
     });
 
     res.json(result);
@@ -996,3 +1277,334 @@ exports.getUnifiedStock = async (req, res) => {
     });
   }
 };
+
+// Controller: getUnifiedStock (variant-first, field-complete, correct totals)
+exports.getUnifiedStock = async (req, res) => {
+  try {
+    // 1) Load all items (lean to keep plain objects and all fields)
+    const items = await Items.find().lean();
+    const itemIds = items.map(i => i._id);
+
+    // 2) Load all variants for these items and bucket by item_id
+    const allVariants = await ItemVariant.find({ item_id: { $in: itemIds } }).lean();
+    const variantsByItem = allVariants.reduce((acc, v) => {
+      const key = String(v.item_id);
+      if (!acc[key]) acc[key] = [];
+      acc[key].push(v);
+      return acc;
+    }, {});
+
+    // 3) Non-serialized stock aggregation (with purchase & supplier joins)
+    const nonSerializedStocks = await NonSerializedStock.aggregate([
+      {
+        $group: {
+          _id: "$item_id",
+          item_id: { $last: "$item_id" },
+          totalStock: { $sum: "$availableQty" },
+          totalSold: { $sum: "$soldQty" },
+          lastSellingPrice: { $last: "$sellingPrice" },
+          lastUnitCost: { $last: "$unitCost" },
+          batches: {
+            $push: {
+              batch_number: "$batch_number",
+              availableQty: "$availableQty",
+              purchaseDate: "$purchaseDate",
+              unitCost: "$unitCost",
+              sellingPrice: "$sellingPrice",
+              purchase_id: "$purchase_id",
+            },
+          },
+        },
+      },
+      { $unwind: "$batches" },
+      {
+        $lookup: {
+          from: "purchases",
+          localField: "batches.purchase_id",
+          foreignField: "_id",
+          as: "purchase_info",
+        },
+      },
+      { $unwind: { path: "$purchase_info", preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: "suppliers",
+          localField: "purchase_info.supplier",
+          foreignField: "_id",
+          as: "supplier_info",
+        },
+      },
+      { $unwind: { path: "$supplier_info", preserveNullAndEmptyArrays: true } },
+      { $sort: { "batches.purchaseDate": -1 } },
+      {
+        $group: {
+          _id: "$item_id",
+          totalStock: { $first: "$totalStock" },
+          totalSold: { $first: "$totalSold" },
+          lastSellingPrice: { $first: "$lastSellingPrice" },
+          lastUnitCost: { $first: "$lastUnitCost" },
+          batches: {
+            $push: {
+              item_id: "$item_id",
+              batch_number: "$batches.batch_number",
+              availableQty: "$batches.availableQty",
+              purchaseDate: "$batches.purchaseDate",
+              unitCost: "$batches.unitCost",
+              sellingPrice: "$batches.sellingPrice",
+              purchase_id: "$batches.purchase_id",
+              purchase: "$purchase_info",
+              supplier: "$supplier_info",
+            },
+          },
+        },
+      },
+    ]);
+
+    const nonSerMap = new Map(
+      nonSerializedStocks.map(ns => [String(ns._id), ns])
+    );
+
+    // 4) Serialized stock aggregation grouped by (item_id, variant_id)
+    // Sort before group so $last returns true "latest" price by purchaseDate
+    const serializedAgg = await SerializedStock.aggregate([
+      { $match: { status: "Available", item_id: { $in: itemIds } } },
+      { $sort: { purchaseDate: 1, createdAt: 1 } },
+
+       {
+        $lookup: {
+          from: "itemvariants",
+          localField: "variant_id",
+          foreignField: "_id",
+          as: "variantInfo",
+        },
+      },
+      { $unwind: { path: "$variantInfo", preserveNullAndEmptyArrays: true } },
+
+      // Keep raw docs for $last semantics, lookups can be after grouping or before;
+      // We group first to get last prices reliably, then enrich batches.
+      {
+        $group: {
+          _id: { item_id: "$item_id", 
+             variant_id: "$variantInfo._id" 
+              },
+          item_id: { $first: "$item_id" },
+          variant_id: { $first: "$variantInfo._id" }, // can be null when no variant used
+          totalAvailable: { $sum: 1 },
+          lastSellingPrice: { $last: "$sellingPrice" },
+               batteryHealth: { $last: "$batteryHealth" },
+               condition: { $last: "$condition" },
+
+          lastUnitCost: { $last: "$unitCost" },
+          stockUnits: {
+            $push: {
+              _id: "$_id",
+              serialNumber: "$serialNumber",
+              unitCost: "$unitCost",
+              sellingPrice: "$sellingPrice",
+              batteryHealth: "$batteryHealth",
+              condition: "$condition",
+              batch_number: "$batch_number",
+              purchaseDate: "$purchaseDate",
+              purchase_id: "$purchase_id",
+            },
+          },
+          batches: {
+            $push: {
+              batch_number: "$batch_number",
+              serialNumber: "$serialNumber",
+              batteryHealth: "$batteryHealth" ,
+              condition:  "$condition" ,
+              status: "$status",
+              purchaseDate: "$purchaseDate",
+              unitCost: "$unitCost",
+              sellingPrice: "$sellingPrice",
+              purchase_id: "$purchase_id",
+            },
+          },
+        },
+      },
+
+      // Enrich batches with purchase & supplier
+      { $unwind: "$batches" },
+      {
+        $lookup: {
+          from: "purchases",
+          localField: "batches.purchase_id",
+          foreignField: "_id",
+          as: "purchase_info",
+        },
+      },
+      { $unwind: { path: "$purchase_info", preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: "suppliers",
+          localField: "purchase_info.supplier",
+          foreignField: "_id",
+          as: "supplier_info",
+        },
+      },
+      { $unwind: { path: "$supplier_info", preserveNullAndEmptyArrays: true } },
+
+      // Reassemble per (item_id, variant_id)
+      {
+        $group: {
+          _id: { item_id: "$item_id", variant_id: "$variant_id" },
+          item_id: { $first: "$item_id" },
+          variant_id: { $first: "$variant_id" },
+          totalAvailable: { $first: "$totalAvailable" },
+          lastSellingPrice: { $first: "$lastSellingPrice" },
+          lastUnitCost: { $first: "$lastUnitCost" },
+          stockUnits: { $first: "$stockUnits" },
+          batteryHealth: { $first: "$batteryHealth" },
+         // condition: "$batches.condition",
+          batches: {
+            $push: {
+               item_id: "$item_id",
+              batch_number: "$batches.batch_number",
+              serialNumber: "$batches.serialNumber",
+               batteryHealth:"$batches.batteryHealth",
+              condition: "$batches.condition",
+              status: "$batches.status",
+              purchaseDate: "$batches.purchaseDate",
+              unitCost: "$batches.unitCost",
+              sellingPrice: "$batches.sellingPrice",
+              purchase_id: "$batches.purchase_id",
+              purchase: "$purchase_info",
+              supplier: "$supplier_info",
+            },
+          },
+        },
+      },
+    ]);
+
+     
+    // Build a map keyed by `${itemId}__${variantId || 'null'}`
+    const serMap = new Map(
+      serializedAgg.map(s => [`${String(s.item_id)}__${s.variant_id ? String(s.variant_id) : 'null'}`, s])
+    );
+
+    // 5) Build final rows
+    const result = [];
+    for (const item of items) {
+      const itemKey = String(item._id);
+      const variants = variantsByItem[itemKey] || [];
+
+      if (variants.length > 0) {
+        // Replace base item with one row per variant (even if stock = 0)
+        for (const v of variants) {
+          const k = `${itemKey}__${String(v._id)}`;
+          const ag = serMap.get(k);
+
+          // Compose variant row, preserving ALL base item fields
+          result.push({
+            ...item,                                // keep every item field
+            _id: item._id,                          // required: all variants share item_id
+            isVariant: true,
+            isSerialized: item.serialized,
+
+            variant_id: v._id,
+            itemName: v.variantName,                // replace name with variant name
+            variantName: v.variantName,
+            variantAttributes: v.variantAttributes || [],
+            sku: v.sku || null,
+            barcode: item.barcode || null,
+            defaultSellingPrice: v.defaultSellingPrice || 0,
+            variantLastUnitCost: v.lastUnitCost || 0,
+            batteryHealth: ag?.batteryHealth || null,
+            condition: ag?.condition || null,
+            // Computed from serialized aggregation (per-variant only)
+            totalStock: ag?.totalAvailable || 0,
+            lastSellingPrice: ag?.lastSellingPrice ?? v.defaultSellingPrice ?? 0,
+            lastUnitCost: ag?.lastUnitCost ?? v.lastUnitCost ?? 0,
+
+            // Enriched arrays
+            serializedItems: ag?.batches || [],
+            batches: ag?.batches || [],
+
+            // Optional: keep non-serialized reference if you need it on variant rows
+            // (Usually 0 because non-serialized isn't variant-tracked)
+            nonSerialized: nonSerMap.get(itemKey) || null,
+          });
+        }
+
+        // Additionally, include a "base item" row that aggregates non-serialized stock
+        const serNoVar = serMap.get(`${itemKey}__null`);
+        const ns = nonSerMap.get(itemKey);
+        //base item for non variants
+        result.push({
+          ...item,
+          _id: item._id,
+          isSerialized: item.serialized,
+          isVariant: false,
+          isBase: true,
+          variant_id: null,
+          itemName: item.itemName,
+          variantName: null,
+          variantAttributes: [],
+          sku: null,
+          barcode: item.barcode ,
+          defaultSellingPrice: item.defaultSellingPrice || 0,
+          variantLastUnitCost: 0,
+
+          // Combine totals for items with no variants
+          totalStock: (ns?.totalStock || 0) + (serNoVar?.totalAvailable || 0),
+          lastSellingPrice: serNoVar?.lastSellingPrice ?? ns?.lastSellingPrice ?? 0,
+          lastUnitCost: serNoVar?.lastUnitCost ?? ns?.lastUnitCost ?? 0,
+
+          serializedItems: serNoVar?.stockUnits || [],
+          // Merge batch views (heterogeneous entries: serialized vs non-serialized)
+          batches: [
+            ...(ns?.batches || []),
+            ...(serNoVar?.batches || []),
+          ],
+
+          nonSerialized: ns || null,
+        });
+      } else {
+        // No variants: return a single base item row merging both flows
+        const ns = nonSerMap.get(itemKey);
+        const serNoVar = serMap.get(`${itemKey}__null`);
+
+        result.push({
+          ...item,
+          _id: item._id,
+          isSerialized: item.serialized,
+          isVariant: false,
+          variant_id: null,
+          itemName: item.itemName,
+          variantName: null,
+          variantAttributes: [],
+          sku: null,
+          barcode: item.barcode ,
+          defaultSellingPrice: item.defaultSellingPrice || 0,
+          variantLastUnitCost: 0,
+
+          // Combine totals for items with no variants
+          totalStock: (ns?.totalStock || 0) + (serNoVar?.totalAvailable || 0),
+          lastSellingPrice: serNoVar?.lastSellingPrice ?? ns?.lastSellingPrice ?? 0,
+          lastUnitCost: serNoVar?.lastUnitCost ?? ns?.lastUnitCost ?? 0,
+            serializedItems: serNoVar?.batches || [],
+
+          //serializedItems: serNoVar?.stockUnits || [],
+          // Merge batch views (heterogeneous entries: serialized vs non-serialized)
+          batches: [
+            ...(ns?.batches || []),
+            ...(serNoVar?.batches || []),
+          ],
+
+          nonSerialized: ns || null,
+        });
+      }
+    }
+
+    console.log(result.filter(x => x.category ==='Device'));
+    res.json(result);
+  } catch (error) {
+    console.error("Error in getUnifiedStock:", error);
+    res.status(500).json({
+      message: "Error fetching unified stock data",
+      error: error.message,
+    });
+  }
+};
+
