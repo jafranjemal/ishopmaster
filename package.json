@@ -14,15 +14,16 @@
     "node-cron": "^3.0.3",
     "nodemailer": "^6.9.16",
     "nodemon": "^3.1.9",
+    "redis": "^5.10.0",
     "socket.io": "^4.8.1"
   },
   "scripts": {
-    "start": "nodemon server.js"
+    "start": "node --watch server.js"
   },
   "name": "api",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "main": "server.js",
-  "author": "",
+  "author": "jafran jemal",
   "license": "ISC",
   "description": ""
 }

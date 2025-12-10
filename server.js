@@ -61,7 +61,7 @@ const deviceInspectionRoutes = require("./routes/deviceInspectionRoutes");
 const reportedIssueRoutes = require("./routes/reportedIssueRoutes");
 const serializedStockRoutes = require("./routes/serializedStock");
 const noneSerializedStockRoutes = require("./routes/nonSerializedStock");
-
+const dashboardRoutes = require("./routes/dashboard.routes");
 
 app.use('/api/items', productRoutes);
 app.use("/api/suppliers", supplierRoutes);
@@ -92,7 +92,7 @@ app.use('/api/barcode-settings', barcodeSettingsRoutes);
 app.use("/api/devices", deviceRoutes);
 app.use("/api/device-inspections", deviceInspectionRoutes);
 app.use("/api/reported-issues", reportedIssueRoutes);
-
+app.use("/api/dashboard", dashboardRoutes);
 
 app.post('/api/print-barcodes', async (req, res) => {
   const { items } = req.body;

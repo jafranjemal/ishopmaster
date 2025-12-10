@@ -25,6 +25,7 @@ router.get('/items-with-unified-stock', stockController.getUnifiedStock);
 
 // Route to get all stocks for an item
 router.get('/item/:itemId', stockController.getItemStockDetails);
+router.get("/items/:itemId", stockController.getItemStockOverview);
 
 
 router.get('/purchase/:purchaseId', stockController.getStockByPurchaseId);
