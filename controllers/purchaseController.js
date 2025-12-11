@@ -282,127 +282,128 @@ exports.createPurchase1 = async (req, res) => {
 };
 
 exports.createPurchase = async (req, res) => {
-const session = await mongoose.startSession();
-session.startTransaction();
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
-try {
-const data = req.body;
+  try {
+    const data = req.body;
 
-console.log("🔥 createPurchase DATA:", data);
-/* ------------------------------------------------
+    console.log("🔥 createPurchase DATA:", data);
+    /* ------------------------------------------------
    1. VALIDATE SUPPLIER + INPUT DATA
 --------------------------------------------------*/
-const supplierAcc = await Account.findOne({
-  account_owner_type: "Supplier",
-  related_party_id: data.supplier,
-}).session(session);
+    const supplierAcc = await Account.findOne({
+      account_owner_type: "Supplier",
+      related_party_id: data.supplier,
+    }).session(session);
 
-if (!supplierAcc) throw new Error("Supplier account not found.");
+    if (!supplierAcc) throw new Error("Supplier account not found.");
 
-if (!Array.isArray(data.purchasedItems) || data.purchasedItems.length === 0)
-  throw new Error("No purchase items provided.");
+    if (!Array.isArray(data.purchasedItems) || data.purchasedItems.length === 0)
+      throw new Error("No purchase items provided.");
 
-/* ------------------------------------------------
+    /* ------------------------------------------------
    2. RESOLVE VARIANTS
 --------------------------------------------------*/
-for (const item of data.purchasedItems) {
-  if (item.isSerialized && item.variantAttributes) {
-    const baseItem = await Item.findById(item.item_id).session(session);
-    if (!baseItem) throw new Error("Base item not found.");
+    for (const item of data.purchasedItems) {
+      if (item.isSerialized && item.variantAttributes) {
+        const baseItem = await Item.findById(item.item_id).session(session);
+        if (!baseItem) throw new Error("Base item not found.");
 
-    const attributesString = item.variantAttributes
-      .map((a) => a.value.toUpperCase())
-      .sort()
-      .join("-");
+        const attributesString = item.variantAttributes
+          .map((a) => a.value.toUpperCase())
+          .sort()
+          .join("-");
 
-    const variantName = `${baseItem.itemName} - ${attributesString}`;
+        const variantName = `${baseItem.itemName} - ${attributesString}`;
 
-    const variant = await ItemVariant.findOneAndUpdate(
-      { item_id: item.item_id, variantName },
-      {
-        $setOnInsert: {
-          item_id: item.item_id,
-          variantAttributes: item.variantAttributes,
-          variantName,
-          defaultSellingPrice: item.sellingPrice,
-          lastUnitCost: item.unitCost,
-        },
-      },
-      { new: true, upsert: true, session }
-    );
+        const variant = await ItemVariant.findOneAndUpdate(
+          { item_id: item.item_id, variantName },
+          {
+            $setOnInsert: {
+              item_id: item.item_id,
+              variantAttributes: item.variantAttributes,
+              variantName,
+              defaultSellingPrice: item.sellingPrice,
+              lastUnitCost: item.unitCost,
+            },
+          },
+          { new: true, upsert: true, session }
+        );
 
-    item.variant_id = variant._id;
-  }
-}
+        item.variant_id = variant._id;
+      }
+    }
 
-/* ------------------------------------------------
+    /* ------------------------------------------------
    3. ASSIGN BATCH NUMBER
 --------------------------------------------------*/
-const batchNo = `BATCH-${Date.now()}-${Math.random()
-  .toString(36)
-  .substring(2, 8)}`;
+    const batchNo = `BATCH-${Date.now()}-${Math.random()
+      .toString(36)
+      .substring(2, 8)}`;
 
-data.purchasedItems = data.purchasedItems.map((i) => {
-  if (i.isSerialized && i.serializedItems) {
-    i.serializedItems = i.serializedItems.map((s) => ({
-      ...s,
-      batch_number: batchNo,
-      variant_id: i.variant_id,
-    }));
-  }
-  return { ...i, batch_number: batchNo };
-});
+    data.purchasedItems = data.purchasedItems.map((i) => {
+      if (i.isSerialized && i.serializedItems) {
+        i.serializedItems = i.serializedItems.map((s) => ({
+          ...s,
+          batch_number: batchNo,
+          variant_id: i.variant_id,
+        }));
+      }
+      return { ...i, batch_number: batchNo };
+    });
 
-/* ------------------------------------------------
+    /* ------------------------------------------------
    4. CREATE PURCHASE DOCUMENT
 --------------------------------------------------*/
-const purchase = await Purchase.create([data], { session });
-const purchaseDoc = purchase[0];
+    const purchase = await Purchase.create([data], { session });
+    const purchaseDoc = purchase[0];
 
-/* ------------------------------------------------
+    /* ------------------------------------------------
    5. UPDATE STOCK + STOCK LEDGER
 --------------------------------------------------*/
-for (const item of purchaseDoc.purchasedItems) {
-  if (item.isSerialized) {
-    // Serialized stock entries
-    for (const unit of item.serializedItems) {
-      await SerializedStock.create(
-        [
-          {
+    for (const item of purchaseDoc.purchasedItems) {
+      if (item.isSerialized) {
+        // Serialized stock entries
+        for (const unit of item.serializedItems) {
+          await SerializedStock.create(
+            [
+              {
+                item_id: item.item_id,
+                variant_id: unit.variant_id,
+                purchase_id: purchaseDoc._id,
+                purchaseDate: purchaseDoc.purchaseDate,
+                serialNumber: unit.serialNumber,
+                batch_number: batchNo,
+                unitCost: unit.unitCost,
+                sellingPrice: unit.sellingPrice,
+                status: "Available",
+              },
+            ],
+            { session }
+          );
+
+          // await StockLedger.create(
+          //   [
+          //     {
+          //       item_id: item.item_id,
+          //       variant_id: unit.variant_id,
+          //       purchase_id: purchaseDoc._id,
+          //       movementType: "Purchase-In",
+          //       serialNumbers: [unit.serialNumber],
+          //       unitCost: unit.unitCost,
+          //       openingQty: 0,
+          //       closingQty: 1,
+          //       batch_number: batchNo,
+          //     },
+          //   ],
+          //   { session }
+          // );
+
+          // Ledger entry
+          const previousLedger = await StockLedger.findOne({
             item_id: item.item_id,
-            variant_id: unit.variant_id,
-            purchase_id: purchaseDoc._id,
-            purchaseDate: purchaseDoc.purchaseDate,
-            serialNumber: unit.serialNumber,
-            batch_number: batchNo,
-            unitCost: unit.unitCost,
-            sellingPrice: unit.sellingPrice,
-            status: "Available",
-          },
-        ],
-        { session }
-      );
-
-      // await StockLedger.create(
-      //   [
-      //     {
-      //       item_id: item.item_id,
-      //       variant_id: unit.variant_id,
-      //       purchase_id: purchaseDoc._id,
-      //       movementType: "Purchase-In",
-      //       serialNumbers: [unit.serialNumber],
-      //       unitCost: unit.unitCost,
-      //       openingQty: 0,
-      //       closingQty: 1,
-      //       batch_number: batchNo,
-      //     },
-      //   ],
-      //   { session }
-      // );
-
-
-       // Ledger entry
-          const previousLedger = await StockLedger.findOne({ item_id: item.item_id })
+          })
             .sort({ createdAt: -1 })
             .session(session)
             .lean();
@@ -418,56 +419,56 @@ for (const item of purchaseDoc.purchasedItems) {
             batch_number: item.batch_number,
             unitCost: item.unitCost,
             sellingPrice: item.sellingPrice,
-            memo: `Purchase: ${purchase[0].referenceNumber}`
+            memo: `Purchase: ${purchase[0].referenceNumber}`,
           });
 
           await StockLedger.create([ledgerEntry], { session });
-
-
-    }
-  } else {
-    // Non-serialized
-    const existing = await NonSerializedStock.find({
-      item_id: item.item_id,
-    }).session(session);
-
-    const opening = existing.reduce((s, e) => s + e.availableQty, 0);
-
-    await NonSerializedStock.create(
-      [
-        {
+        }
+      } else {
+        // Non-serialized
+        const existing = await NonSerializedStock.find({
           item_id: item.item_id,
-          purchase_id: purchaseDoc._id,
-            purchaseDate: purchaseDoc.purchaseDate,
+        }).session(session);
 
-          purchaseQty: item.purchaseQty,
-          availableQty: item.purchaseQty,
-          beforePurchaseAvailableQty: opening,
-          unitCost: item.unitCost,
-          sellingPrice: item.sellingPrice,
-          batch_number: batchNo,
-        },
-      ],
-      { session }
-    );
+        const opening = existing.reduce((s, e) => s + e.availableQty, 0);
 
-    // await StockLedger.create(
-    //   [
-    //     {
-    //       item_id: item.item_id,
-    //       purchase_id: purchaseDoc._id,
-    //       movementType: "IN",
-    //       quantity: item.purchaseQty,
-    //       unitCost: item.unitCost,
-    //       openingQty: opening,
-    //       closingQty: opening + item.purchaseQty,
-    //       batch_number: batchNo,
-    //     },
-    //   ],
-    //   { session }
-    // );
- // Ledger
-        const previousLedger = await StockLedger.findOne({ item_id: item.item_id })
+        await NonSerializedStock.create(
+          [
+            {
+              item_id: item.item_id,
+              purchase_id: purchaseDoc._id,
+              purchaseDate: purchaseDoc.purchaseDate,
+
+              purchaseQty: item.purchaseQty,
+              availableQty: item.purchaseQty,
+              beforePurchaseAvailableQty: opening,
+              unitCost: item.unitCost,
+              sellingPrice: item.sellingPrice,
+              batch_number: batchNo,
+            },
+          ],
+          { session }
+        );
+
+        // await StockLedger.create(
+        //   [
+        //     {
+        //       item_id: item.item_id,
+        //       purchase_id: purchaseDoc._id,
+        //       movementType: "IN",
+        //       quantity: item.purchaseQty,
+        //       unitCost: item.unitCost,
+        //       openingQty: opening,
+        //       closingQty: opening + item.purchaseQty,
+        //       batch_number: batchNo,
+        //     },
+        //   ],
+        //   { session }
+        // );
+        // Ledger
+        const previousLedger = await StockLedger.findOne({
+          item_id: item.item_id,
+        })
           .sort({ createdAt: -1 })
           .session(session)
           .lean();
@@ -481,105 +482,101 @@ for (const item of purchaseDoc.purchasedItems) {
           batch_number: item.batch_number,
           unitCost: item.unitCost,
           sellingPrice: item.sellingPrice,
-          memo: `Purchase: ${purchase[0].referenceNumber}`
+          memo: `Purchase: ${purchase[0].referenceNumber}`,
         });
 
         await StockLedger.create([ledgerEntry], { session });
+      }
+    }
 
-    
-  }
-}
-
-/* ------------------------------------------------
+    /* ------------------------------------------------
    6. SUPPLIER ACCOUNT UPDATE
 --------------------------------------------------*/
-supplierAcc.balance -= purchaseDoc.grand_total;
-await supplierAcc.save({ session });
+    supplierAcc.balance -= purchaseDoc.grand_total;
+    await supplierAcc.save({ session });
 
-await Transaction.create(
-  [
-    {
-      account_id: supplierAcc._id,
-      amount: purchaseDoc.grand_total * -1,
-      transaction_type: "Withdrawal",
-      reason: `Purchase: ${purchaseDoc.referenceNumber}`,
-      balance_after_transaction: supplierAcc.balance,
-    },
-  ],
-  { session }
-);
+    await Transaction.create(
+      [
+        {
+          account_id: supplierAcc._id,
+          amount: purchaseDoc.grand_total * -1,
+          transaction_type: "Withdrawal",
+          reason: `Purchase: ${purchaseDoc.referenceNumber}`,
+          balance_after_transaction: supplierAcc.balance,
+        },
+      ],
+      { session }
+    );
 
-/* ------------------------------------------------
+    /* ------------------------------------------------
    7. AUDIT LOG
 --------------------------------------------------*/
-await AuditLog.create(
-  [
-    {
-      action: "PURCHASE_CREATED",
-      purchase_id: purchaseDoc._id,
-      performedBy: req.user?._id,
-      before: null,
-      after: purchaseDoc,
-      description: `Purchase ${purchaseDoc.referenceNumber} created.`,
-    },
-  ],
-  { session }
-);
+    await AuditLog.create(
+      [
+        {
+          action: "PURCHASE_CREATED",
+          purchase_id: purchaseDoc._id,
+          performedBy: req.user?._id,
+          before: null,
+          after: purchaseDoc,
+          description: `Purchase ${purchaseDoc.referenceNumber} created.`,
+        },
+      ],
+      { session }
+    );
 
-await session.commitTransaction();
-res.status(201).json({ message: "Purchase created", purchase: purchaseDoc });
+    await session.commitTransaction();
+    res
+      .status(201)
+      .json({ message: "Purchase created", purchase: purchaseDoc });
+  } catch (err) {
+    await session.abortTransaction();
+    console.error("🔥 createPurchase ERROR:", err);
 
-
-} catch (err) {
-await session.abortTransaction();
- console.error("🔥 createPurchase ERROR:", err);
-
-  if (err.code === 11000) {
-    return res.status(409).json({
-      message: `Duplicate value not allowed: ${JSON.stringify(err.keyValue)}`
-    });
-  }
-
-    if (err.name === "ValidationError") {
-    const formattedErrors = [];
-
-    for (const field in err.errors) {
-      const e = err.errors[field];
-
-      formattedErrors.push({
-        field: e.path,
-        message: e.message,
-        kind: e.kind,
-        value: e.value,
+    if (err.code === 11000) {
+      return res.status(409).json({
+        message: `Duplicate value not allowed: ${JSON.stringify(err.keyValue)}`,
       });
     }
 
-    const readableMessage = formattedErrors
-      .map(e => `${e.field}: ${e.message}`)
-      .join("; ");
+    if (err.name === "ValidationError") {
+      const formattedErrors = [];
 
-    return res.status(400).json({
-      success: false,
-      status: "validation_error",
-      message: readableMessage,
-      details: formattedErrors,
-      ...(process.env.NODE_ENV === "development" && { stack: err.stack })
-    });
+      for (const field in err.errors) {
+        const e = err.errors[field];
+
+        formattedErrors.push({
+          field: e.path,
+          message: e.message,
+          kind: e.kind,
+          value: e.value,
+        });
+      }
+
+      const readableMessage = formattedErrors
+        .map((e) => `${e.field}: ${e.message}`)
+        .join("; ");
+
+      return res.status(400).json({
+        success: false,
+        status: "validation_error",
+        message: readableMessage,
+        details: formattedErrors,
+        ...(process.env.NODE_ENV === "development" && { stack: err.stack }),
+      });
+    }
+
+    res.status(500).json({ error: err.message });
+  } finally {
+    session.endSession();
   }
-
-res.status(500).json({ error: err.message });
-} finally {
-session.endSession();
-}
 };
-
-
 
 // Get all purchases
 exports.getAllPurchases = async (req, res) => {
   try {
     const purchases = await Purchase.find()
-    .sort({ _id: -1 } )
+      .sort({ _id: -1 })
       .populate("supplier")
       .populate("purchasedItems.item_id");
     res.status(200).json(purchases);
@@ -747,10 +744,12 @@ exports.updatePurchaseSellingPriceOld = async (req, res) => {
     console.error("Error updating purchase:", error);
     res
       .status(500)
-      .json({ message: "Error updating purchase", error: error.message });
+      .json({
+        message: error?.message || "Error updating purchase",
+        error: error.message,
+      });
   }
 };
-
 
 /**
  * Helper: normalize incoming item_id which can be either populated object or string/ObjectId
@@ -808,7 +807,8 @@ exports.updatePurchaseSellingPrice = async (req, res) => {
     const { purchasedItems } = req.body;
 
     // Basic validation
-    if (!purchaseId) return res.status(400).json({ message: "purchaseId required" });
+    if (!purchaseId)
+      return res.status(400).json({ message: "purchaseId required" });
     if (!Array.isArray(purchasedItems) || purchasedItems.length === 0) {
       return res.status(400).json({ message: "purchasedItems array required" });
     }
@@ -818,7 +818,7 @@ exports.updatePurchaseSellingPrice = async (req, res) => {
       purchaseUpdated: false,
       serializedUpdatedCount: 0,
       nonSerializedUpdatedCount: 0,
-      errors: []
+      errors: [],
     };
 
     await session.withTransaction(async () => {
@@ -830,7 +830,10 @@ exports.updatePurchaseSellingPrice = async (req, res) => {
 
       // Guard: prevent editing if already Paid
       if (purchase.payment_status === "Paid") {
-        throw { status: 403, message: "Cannot edit a purchase that is already Paid" };
+        throw {
+          status: 403,
+          message: "Cannot edit a purchase that is already Paid",
+        };
       }
 
       // 2) Normalize item IDs and collect serial numbers and batch keys to update
@@ -849,7 +852,10 @@ exports.updatePurchaseSellingPrice = async (req, res) => {
           const serializedItems = item.serializedItems || [];
           for (const s of serializedItems) {
             if (!s.serialNumber) {
-              resultSummary.errors.push({ item, message: "serialized item missing serialNumber" });
+              resultSummary.errors.push({
+                item,
+                message: "serialized item missing serialNumber",
+              });
               continue;
             }
             serialsToUpdate.push({
@@ -862,7 +868,10 @@ exports.updatePurchaseSellingPrice = async (req, res) => {
           // For non-serialized we prefer batch_number
           const batchNumber = item.batch_number;
           if (!batchNumber) {
-            resultSummary.errors.push({ item, message: "non-serialized item missing batch_number" });
+            resultSummary.errors.push({
+              item,
+              message: "non-serialized item missing batch_number",
+            });
             continue;
           }
           batchKeysToUpdate.push({
@@ -879,27 +888,38 @@ exports.updatePurchaseSellingPrice = async (req, res) => {
       resultSummary.purchaseUpdated = true;
 
       // 4) Bulk fetch existing serials and batches to capture previous prices
-      const serialNumbers = serialsToUpdate.map(s => s.serialNumber);
+      const serialNumbers = serialsToUpdate.map((s) => s.serialNumber);
       const uniqueSerialNumbers = Array.from(new Set(serialNumbers));
 
-      const batchFilters = batchKeysToUpdate.map(b => ({
+      const batchFilters = batchKeysToUpdate.map((b) => ({
         item_id: new mongoose.Types.ObjectId(b.itemId),
-        batch_number: b.batchNumber
+        batch_number: b.batchNumber,
       }));
 
       let existingSerialDocs = [];
       if (uniqueSerialNumbers.length) {
-        existingSerialDocs = await SerializedStock.find({ serialNumber: { $in: uniqueSerialNumbers } }).session(session);
+        existingSerialDocs = await SerializedStock.find({
+          serialNumber: { $in: uniqueSerialNumbers },
+        }).session(session);
       }
 
       let existingBatchDocs = [];
       if (batchFilters.length) {
-        existingBatchDocs = await NonSerializedStock.find({ $or: batchFilters }).session(session);
+        existingBatchDocs = await NonSerializedStock.find({
+          $or: batchFilters,
+        }).session(session);
       }
 
       // Build lookup maps
-      const serialDocMap = new Map(existingSerialDocs.map(d => [String(d.serialNumber), d]));
-      const batchDocMap = new Map(existingBatchDocs.map(d => [`${String(d.item_id)}__${d.batch_number}`, d]));
+      const serialDocMap = new Map(
+        existingSerialDocs.map((d) => [String(d.serialNumber), d])
+      );
+      const batchDocMap = new Map(
+        existingBatchDocs.map((d) => [
+          `${String(d.item_id)}__${d.batch_number}`,
+          d,
+        ])
+      );
 
       // 5) Build bulkWrite operations
       const serializedBulkOps = []; // for SerializedStock
@@ -914,7 +934,10 @@ exports.updatePurchaseSellingPrice = async (req, res) => {
         const existing = serialDocMap.get(String(s.serialNumber));
         if (!existing) {
           // serial not found: collect warning but continue
-          resultSummary.errors.push({ type: "serial_not_found", serial: s.serialNumber });
+          resultSummary.errors.push({
+            type: "serial_not_found",
+            serial: s.serialNumber,
+          });
           continue;
         }
 
@@ -924,7 +947,11 @@ exports.updatePurchaseSellingPrice = async (req, res) => {
         // guard: do not update if status is sold/damaged (unless front-end sets force flag; can be added)
         if (existing.status && existing.status !== "Available") {
           // skip and record
-          resultSummary.errors.push({ type: "serial_status_block", serial: s.serialNumber, status: existing.status });
+          resultSummary.errors.push({
+            type: "serial_status_block",
+            serial: s.serialNumber,
+            status: existing.status,
+          });
           continue;
         }
 
@@ -932,8 +959,8 @@ exports.updatePurchaseSellingPrice = async (req, res) => {
         serializedBulkOps.push({
           updateOne: {
             filter: { _id: existing._id },
-            update: { $set: { sellingPrice: newPrice } }
-          }
+            update: { $set: { sellingPrice: newPrice } },
+          },
         });
 
         // ledger doc (qty 0: price correction)
@@ -950,7 +977,7 @@ exports.updatePurchaseSellingPrice = async (req, res) => {
           unitCost: existing.unitCost ?? null,
           sellingPrice: newPrice,
           memo: `Price updated from ${prevPrice} to ${newPrice} for serial ${existing.serialNumber}`,
-          createdAt: new Date()
+          createdAt: new Date(),
         });
 
         auditDocs.push({
@@ -959,7 +986,7 @@ exports.updatePurchaseSellingPrice = async (req, res) => {
           before: { sellingPrice: prevPrice },
           after: { sellingPrice: newPrice },
           reason: "Purchase price edit",
-          createdAt: new Date()
+          createdAt: new Date(),
         });
       }
 
@@ -969,13 +996,21 @@ exports.updatePurchaseSellingPrice = async (req, res) => {
         const existing = batchDocMap.get(key);
 
         if (!existing) {
-          resultSummary.errors.push({ type: "batch_not_found", batch: b.batchNumber, itemId: b.itemId });
+          resultSummary.errors.push({
+            type: "batch_not_found",
+            batch: b.batchNumber,
+            itemId: b.itemId,
+          });
           continue;
         }
 
         // guard: block if availableQty <= 0 (unless force)
         if ((existing.availableQty || 0) <= 0) {
-          resultSummary.errors.push({ type: "batch_no_stock", batch: b.batchNumber, itemId: b.itemId });
+          resultSummary.errors.push({
+            type: "batch_no_stock",
+            batch: b.batchNumber,
+            itemId: b.itemId,
+          });
           continue;
         }
 
@@ -985,8 +1020,8 @@ exports.updatePurchaseSellingPrice = async (req, res) => {
         nonSerializedBulkOps.push({
           updateOne: {
             filter: { _id: existing._id },
-            update: { $set: { sellingPrice: newPrice } }
-          }
+            update: { $set: { sellingPrice: newPrice } },
+          },
         });
 
         ledgerDocs.push({
@@ -996,13 +1031,14 @@ exports.updatePurchaseSellingPrice = async (req, res) => {
           serialNumber: null,
           movementType: "Correction",
           qty: 0,
-          opening_balance: existing.beforePurchaseAvailableQty ?? existing.availableQty ?? 0,
+          opening_balance:
+            existing.beforePurchaseAvailableQty ?? existing.availableQty ?? 0,
           closing_balance: existing.availableQty ?? 0,
           batch_number: existing.batch_number,
           unitCost: existing.unitCost ?? null,
           sellingPrice: newPrice,
           memo: `Batch price updated from ${prevPrice} to ${newPrice} for batch ${existing.batch_number}`,
-          createdAt: new Date()
+          createdAt: new Date(),
         });
 
         auditDocs.push({
@@ -1011,20 +1047,28 @@ exports.updatePurchaseSellingPrice = async (req, res) => {
           before: { sellingPrice: prevPrice },
           after: { sellingPrice: newPrice },
           reason: "Purchase price edit",
-          createdAt: new Date()
+          createdAt: new Date(),
         });
       }
 
       // 6) Execute bulkWrite operations (if any)
       if (serializedBulkOps.length) {
-        const r = await SerializedStock.bulkWrite(serializedBulkOps, { session });
+        const r = await SerializedStock.bulkWrite(serializedBulkOps, {
+          session,
+        });
         // modifiedCount is driver-dependent; best to compute by counting ops executed if needed
-        resultSummary.serializedUpdatedCount = (r && (r.modifiedCount || r.nModified || 0)) || resultSummary.serializedUpdatedCount;
+        resultSummary.serializedUpdatedCount =
+          (r && (r.modifiedCount || r.nModified || 0)) ||
+          resultSummary.serializedUpdatedCount;
       }
 
       if (nonSerializedBulkOps.length) {
-        const r = await NonSerializedStock.bulkWrite(nonSerializedBulkOps, { session });
-        resultSummary.nonSerializedUpdatedCount = (r && (r.modifiedCount || r.nModified || 0)) || resultSummary.nonSerializedUpdatedCount;
+        const r = await NonSerializedStock.bulkWrite(nonSerializedBulkOps, {
+          session,
+        });
+        resultSummary.nonSerializedUpdatedCount =
+          (r && (r.modifiedCount || r.nModified || 0)) ||
+          resultSummary.nonSerializedUpdatedCount;
       }
 
       // 7) Insert ledger + audit docs (if any)
@@ -1036,7 +1080,10 @@ exports.updatePurchaseSellingPrice = async (req, res) => {
         } catch (err) {
           // ledger failures shouldn't abort the transaction silently; record error and continue
           console.error("StockLedger insertMany failed:", err);
-          resultSummary.errors.push({ type: "ledger_insert_failed", message: err.message });
+          resultSummary.errors.push({
+            type: "ledger_insert_failed",
+            message: err.message,
+          });
         }
       }
 
@@ -1045,7 +1092,10 @@ exports.updatePurchaseSellingPrice = async (req, res) => {
           await AuditLog.insertMany(auditDocs, { session });
         } catch (err) {
           console.error("AuditLog insertMany failed:", err);
-          resultSummary.errors.push({ type: "audit_insert_failed", message: err.message });
+          resultSummary.errors.push({
+            type: "audit_insert_failed",
+            message: err.message,
+          });
         }
       }
     }); // end transaction
@@ -1053,18 +1103,26 @@ exports.updatePurchaseSellingPrice = async (req, res) => {
     // success
     return res.json({
       message: "Purchase & stock prices updated",
-      resultSummary
+      resultSummary,
     });
-
   } catch (err) {
     console.error("updatePurchaseSellingPrice error:", err);
     // If our thrown object has status, message, respect it
     if (err && err.status) {
       return res.status(err.status).json({ message: err.message || "Error" });
     }
-    return res.status(500).json({ message: "Failed to update purchase selling prices", error: err.message || err });
+    return res
+      .status(500)
+      .json({
+        message: "Failed to update purchase selling prices",
+        error: err.message || err,
+      });
   } finally {
-    try { await session.endSession(); } catch (e) { /* ignore */ }
+    try {
+      await session.endSession();
+    } catch (e) {
+      /* ignore */
+    }
   }
 };
 
@@ -1250,7 +1308,11 @@ const buildSerializedMap = (purchaseItems) => {
     if (line?.isSerialized && Array.isArray(line.serializedItems)) {
       line.serializedItems.forEach((si) => {
         if (si?.serialNumber) {
-          map.set(String(si.serialNumber), { si, lineIndex: li, lineRef: line });
+          map.set(String(si.serialNumber), {
+            si,
+            lineIndex: li,
+            lineRef: line,
+          });
         }
       });
     }
@@ -1270,6 +1332,7 @@ exports.updatePurchase = async (req, res) => {
   session.startTransaction();
   try {
     const { purchaseId } = req.params;
+    console.log("Updating purchase:", purchaseId);
     const incoming = req.body;
 
     if (!purchaseId) {
@@ -1279,7 +1342,9 @@ exports.updatePurchase = async (req, res) => {
     }
 
     // Load existing purchase
-    const existingPurchase = await Purchase.findById(purchaseId).session(session);
+    const existingPurchase = await Purchase.findById(purchaseId).session(
+      session
+    );
     if (!existingPurchase) {
       await session.abortTransaction();
       session.endSession();
@@ -1300,17 +1365,24 @@ exports.updatePurchase = async (req, res) => {
     }
 
     // Validate incoming.purchasedItems existence
-    if (!Array.isArray(incoming.purchasedItems) || incoming.purchasedItems.length === 0) {
+    if (
+      !Array.isArray(incoming.purchasedItems) ||
+      incoming.purchasedItems.length === 0
+    ) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: "purchasedItems must be a non-empty array" });
+      return res
+        .status(400)
+        .json({ message: "purchasedItems must be a non-empty array" });
     }
 
     // Preserve original batch_number unless client explicitly changed it per-line
     // We'll respect incoming.batch_number if provided, otherwise use existingPurchase.batch_number for new rows.
 
     // Build serialized maps
-    const oldSerializedMap = buildSerializedMap(existingPurchase.purchasedItems);
+    const oldSerializedMap = buildSerializedMap(
+      existingPurchase.purchasedItems
+    );
     const newSerializedMap = buildSerializedMap(incoming.purchasedItems);
 
     // Compute added/removed/modified serials
@@ -1320,7 +1392,11 @@ exports.updatePurchase = async (req, res) => {
 
     for (const [serial, newMeta] of newSerializedMap.entries()) {
       if (!oldSerializedMap.has(serial)) {
-        addedSerials.push({ serial, newSi: newMeta.si, lineRef: newMeta.lineRef });
+        addedSerials.push({
+          serial,
+          newSi: newMeta.si,
+          lineRef: newMeta.lineRef,
+        });
       } else {
         const { si: oldSi } = oldSerializedMap.get(serial);
         const { si: newSi } = newMeta;
@@ -1329,27 +1405,40 @@ exports.updatePurchase = async (req, res) => {
           Number(oldSi.unitCost || 0) !== Number(newSi.unitCost || 0) ||
           Number(oldSi.sellingPrice || 0) !== Number(newSi.sellingPrice || 0) ||
           String(oldSi.variant_id || "") !== String(newSi.variant_id || "") ||
-          String(oldSi.batch_number || "") !== String(newSi.batch_number || "") ||
-          Number(oldSi.batteryHealth || 0) !== Number(newSi.batteryHealth || 0) ||
+          String(oldSi.batch_number || "") !==
+            String(newSi.batch_number || "") ||
+          Number(oldSi.batteryHealth || 0) !==
+            Number(newSi.batteryHealth || 0) ||
           String(oldSi.condition || "") !== String(newSi.condition || "");
-        if (changed) modifiedSerials.push({ serial, oldSi, newSi, lineRef: newMeta.lineRef });
+        if (changed)
+          modifiedSerials.push({
+            serial,
+            oldSi,
+            newSi,
+            lineRef: newMeta.lineRef,
+          });
       }
     }
 
     for (const [serial, oldMeta] of oldSerializedMap.entries()) {
       if (!newSerializedMap.has(serial)) {
-
-        removedSerials.push({ serial, oldSi: oldMeta.si, lineRef: oldMeta.lineRef });
+        removedSerials.push({
+          serial,
+          oldSi: oldMeta.si,
+          lineRef: oldMeta.lineRef,
+        });
       }
     }
 
-    //console.log("Added Serials:", addedSerials);
-    //console.log("Removed Serials:", removedSerials);
-    //console.log("Modified Serials:", modifiedSerials);
+    console.log("Added Serials:", addedSerials);
+    console.log("Removed Serials:", removedSerials);
+    console.log("Modified Serials:", modifiedSerials);
 
     // Validate removed serialized units are safe to remove (must be Available)
     for (const { serial } of removedSerials) {
-      const stockRec = await SerializedStock.findOne({ serialNumber: serial }).session(session);
+      const stockRec = await SerializedStock.findOne({
+        serialNumber: serial,
+      }).session(session);
       if (!stockRec) continue; // No record -> safe (but strange)
       if (stockRec.status !== "Available") {
         await session.abortTransaction();
@@ -1390,7 +1479,10 @@ exports.updatePurchase = async (req, res) => {
           item_id: itemId,
         }).session(session);
 
-        const totalAvailable = stocks.reduce((s, st) => s + (st.availableQty || 0), 0);
+        const totalAvailable = stocks.reduce(
+          (s, st) => s + (st.availableQty || 0),
+          0
+        );
         const toRemove = -d.deltaQty;
         if (totalAvailable < toRemove) {
           await session.abortTransaction();
@@ -1405,10 +1497,16 @@ exports.updatePurchase = async (req, res) => {
     // ---------- All validations passed. Apply changes ----------
 
     // 1) Handle serialized removals (delete only purchase_id-anchored Available rows)
-    for (const { serial, oldSi , lineRef } of removedSerials) {
-      await SerializedStock.deleteOne({ serialNumber: serial, purchase_id: existingPurchase._id }).session(session);
+    for (const { serial, oldSi, lineRef } of removedSerials) {
+      await SerializedStock.deleteOne({
+        serialNumber: serial,
+        purchase_id: existingPurchase._id,
+      }).session(session);
       // ledger entry
-      const prevLedger = await StockLedger.findOne({ serialNumber: serial }).sort({ createdAt: -1 }).session(session).lean();
+      const prevLedger = await StockLedger.findOne({ serialNumber: serial })
+        .sort({ createdAt: -1 })
+        .session(session)
+        .lean();
       const ledger = makeLedgerEntry({
         item_id: lineRef.item_id || null,
         variant_id: oldSi.variant_id || null,
@@ -1428,23 +1526,35 @@ exports.updatePurchase = async (req, res) => {
     // 2) Handle serialized modifications: update stock row if Available
     for (const mod of modifiedSerials) {
       const { serial, newSi } = mod;
-      const stockRec = await SerializedStock.findOne({ serialNumber: serial, purchase_id: existingPurchase._id }).session(session);
+      const stockRec = await SerializedStock.findOne({
+        serialNumber: serial,
+        purchase_id: existingPurchase._id,
+      }).session(session);
       if (!stockRec) continue;
       if (stockRec.status !== "Available") {
         // Skip immutable sold units
         continue;
       }
       // update allowed fields
-      if (typeof newSi.unitCost !== "undefined") stockRec.unitCost = newSi.unitCost;
-      if (typeof newSi.sellingPrice !== "undefined") stockRec.sellingPrice = newSi.sellingPrice;
-      if (typeof newSi.variant_id !== "undefined") stockRec.variant_id = newSi.variant_id;
-      if (typeof newSi.condition !== "undefined") stockRec.condition = newSi.condition;
-      if (typeof newSi.batteryHealth !== "undefined") stockRec.batteryHealth = newSi.batteryHealth;
+      if (typeof newSi.unitCost !== "undefined")
+        stockRec.unitCost = newSi.unitCost;
+      if (typeof newSi.sellingPrice !== "undefined")
+        stockRec.sellingPrice = newSi.sellingPrice;
+      if (typeof newSi.variant_id !== "undefined")
+        stockRec.variant_id = newSi.variant_id;
+      if (typeof newSi.condition !== "undefined")
+        stockRec.condition = newSi.condition;
+      if (typeof newSi.batteryHealth !== "undefined")
+        stockRec.batteryHealth = newSi.batteryHealth;
       // keep purchaseDate & batch as existing unless changed explicitly
-      if (typeof newSi.batch_number !== "undefined") stockRec.batch_number = newSi.batch_number;
+      if (typeof newSi.batch_number !== "undefined")
+        stockRec.batch_number = newSi.batch_number;
       await stockRec.save({ session });
 
-      const prevLedger = await StockLedger.findOne({ serialNumber: serial }).sort({ createdAt: -1 }).session(session).lean();
+      const prevLedger = await StockLedger.findOne({ serialNumber: serial })
+        .sort({ createdAt: -1 })
+        .session(session)
+        .lean();
       const ledger = makeLedgerEntry({
         item_id: stockRec.item_id,
         variant_id: stockRec.variant_id,
@@ -1465,7 +1575,9 @@ exports.updatePurchase = async (req, res) => {
     for (const add of addedSerials) {
       const { newSi, lineRef } = add;
       // check serial uniqueness
-      const existing = await SerializedStock.findOne({ serialNumber: newSi.serialNumber }).session(session);
+      const existing = await SerializedStock.findOne({
+        serialNumber: newSi.serialNumber,
+      }).session(session);
       if (existing) {
         // if exists but tied to same purchase skip; otherwise reject
         if (String(existing.purchase_id) !== String(existingPurchase._id)) {
@@ -1487,7 +1599,8 @@ exports.updatePurchase = async (req, res) => {
             purchase_id: existingPurchase._id,
             serialNumber: newSi.serialNumber,
             batch_number: newSi.batch_number || existingPurchase.batch_number,
-            purchaseDate: incoming.purchaseDate || existingPurchase.purchaseDate,
+            purchaseDate:
+              incoming.purchaseDate || existingPurchase.purchaseDate,
             unitCost: newSi.unitCost,
             sellingPrice: newSi.sellingPrice,
             status: "Available",
@@ -1498,7 +1611,10 @@ exports.updatePurchase = async (req, res) => {
         { session }
       );
 
-      const prevLedger = await StockLedger.findOne({ item_id: lineRef.item_id, variant_id: newSi.variant_id || lineRef.variant_id })
+      const prevLedger = await StockLedger.findOne({
+        item_id: lineRef.item_id,
+        variant_id: newSi.variant_id || lineRef.variant_id,
+      })
         .sort({ createdAt: -1 })
         .session(session)
         .lean();
@@ -1521,6 +1637,34 @@ exports.updatePurchase = async (req, res) => {
 
     // 4) Non-serialized adjustments (create for increases; reduce FIFO for decreases; update price for zero-delta)
     for (const d of nonSerializedDeltas) {
+      // 1. Determine the final batch number for the new stock entry
+      let finalBatchNumber = null;
+
+      // A. Try to retrieve the batch number from the EXISTING ITEMS
+      // Since the batch_number is stored in purchasedItems array, find it from the existing purchase items.
+      // We use the batch number from the first item, as they should all be the same.
+      const existingItemWithBatch = existingPurchase.purchasedItems.find(
+        (item) => item.batch_number
+      );
+
+      if (existingItemWithBatch) {
+        // Found an existing batch number from the old purchase items
+        finalBatchNumber = existingItemWithBatch.batch_number;
+      }
+
+      // B. If no batch number exists (e.g., this is the first item ever in this purchase, or a new item is being added to an item set that previously had none)
+      if (!finalBatchNumber) {
+        // Generate a brand new batch number
+        const uniqueId = Math.random().toString(36).substring(2, 8);
+        finalBatchNumber = `BATCH-${Date.now()}-${uniqueId}`;
+
+        // CRITICAL: Since you generated a NEW batch number, you must update ALL items in this purchase
+        // to maintain the "one purchase, one batch" rule.
+        // NOTE: This must happen *before* the purchase document is updated/saved.
+
+        // You should iterate over all purchase items (existing and new incoming)
+        // and assign the new batch number, then save the main Purchase document.
+      }
       const { oldLine, newLine, deltaQty } = d;
       if (deltaQty === 0) {
         // update price fields in NonSerializedStock rows belonging to this purchase only (if client changed pricing)
@@ -1529,8 +1673,14 @@ exports.updatePurchase = async (req, res) => {
             { purchase_id: existingPurchase._id, item_id: oldLine.item_id },
             {
               $set: {
-                unitCost: typeof newLine.unitCost !== "undefined" ? newLine.unitCost : oldLine.unitCost,
-                sellingPrice: typeof newLine.sellingPrice !== "undefined" ? newLine.sellingPrice : oldLine.sellingPrice,
+                unitCost:
+                  typeof newLine.unitCost !== "undefined"
+                    ? newLine.unitCost
+                    : oldLine.unitCost,
+                sellingPrice:
+                  typeof newLine.sellingPrice !== "undefined"
+                    ? newLine.sellingPrice
+                    : oldLine.sellingPrice,
               },
             },
             { session }
@@ -1541,13 +1691,16 @@ exports.updatePurchase = async (req, res) => {
 
       if (deltaQty > 0) {
         // create new NonSerializedStock entry for delta
+       
         await NonSerializedStock.create(
           [
             {
               item_id: newLine.item_id,
               purchase_id: existingPurchase._id,
-              batch_number: newLine.batch_number || existingPurchase.batch_number,
-              purchaseDate: incoming.purchaseDate || existingPurchase.purchaseDate,
+              batch_number:
+               finalBatchNumber,
+              purchaseDate:
+                incoming.purchaseDate || existingPurchase.purchaseDate,
               purchaseQty: deltaQty,
               availableQty: deltaQty,
               beforePurchaseAvailableQty: 0,
@@ -1560,7 +1713,10 @@ exports.updatePurchase = async (req, res) => {
         );
 
         // ledger
-        const prevLedger = await StockLedger.findOne({ item_id: newLine.item_id, variant_id: null })
+        const prevLedger = await StockLedger.findOne({
+          item_id: newLine.item_id,
+          variant_id: null,
+        })
           .sort({ createdAt: -1 })
           .session(session)
           .lean();
@@ -1571,7 +1727,7 @@ exports.updatePurchase = async (req, res) => {
           qty: deltaQty,
           previousLedger: prevLedger,
           purchase_id: existingPurchase._id,
-          batch_number: newLine.batch_number || existingPurchase.batch_number,
+          batch_number: finalBatchNumber,
           unitCost: newLine.unitCost,
           sellingPrice: newLine.sellingPrice,
           memo: `Non-serialized increase by purchase update ${existingPurchase.referenceNumber}`,
@@ -1595,7 +1751,10 @@ exports.updatePurchase = async (req, res) => {
           st.purchaseQty = Math.max(0, (st.purchaseQty || 0) - reduc);
           await st.save({ session });
 
-          const prevLedger = await StockLedger.findOne({ item_id: st.item_id, variant_id: null })
+          const prevLedger = await StockLedger.findOne({
+            item_id: st.item_id,
+            variant_id: null,
+          })
             .sort({ createdAt: -1 })
             .session(session)
             .lean();
@@ -1619,7 +1778,12 @@ exports.updatePurchase = async (req, res) => {
         if (qtyToRemove > 0) {
           await session.abortTransaction();
           session.endSession();
-          return res.status(500).json({ message: "Failed to consume required qty while reducing non-serialized items." });
+          return res
+            .status(500)
+            .json({
+              message:
+                "Failed to consume required qty while reducing non-serialized items.",
+            });
         }
       }
     }
@@ -1628,12 +1792,26 @@ exports.updatePurchase = async (req, res) => {
     const recomputeGrandTotal = (purchasedItems) => {
       const raw = purchasedItems.reduce((acc, li) => {
         if (li.isSerialized && Array.isArray(li.serializedItems)) {
-          return acc + li.serializedItems.reduce((s, si) => s + Number(si.unitCost || 0), 0);
+          return (
+            acc +
+            li.serializedItems.reduce(
+              (s, si) => s + Number(si.unitCost || 0),
+              0
+            )
+          );
         }
         return acc + Number(li.purchaseQty || 0) * Number(li.unitCost || 0);
       }, 0);
-      const afterDiscount = raw - Number(incoming.purchase_discount || existingPurchase.purchase_discount || 0);
-      const afterTax = afterDiscount + (afterDiscount * Number(incoming.purchase_tax || existingPurchase.purchase_tax || 0)) / 100;
+      const afterDiscount =
+        raw -
+        Number(
+          incoming.purchase_discount || existingPurchase.purchase_discount || 0
+        );
+      const afterTax =
+        afterDiscount +
+        (afterDiscount *
+          Number(incoming.purchase_tax || existingPurchase.purchase_tax || 0)) /
+          100;
       return Number(afterTax.toFixed(2));
     };
 
@@ -1645,17 +1823,28 @@ exports.updatePurchase = async (req, res) => {
     const safeUpdates = {
       // Keep supplier & referenceNumber immutable unless you intentionally allow change
       purchaseDate: incoming.purchaseDate || existingPurchase.purchaseDate,
-      purchase_tax: typeof incoming.purchase_tax !== "undefined" ? incoming.purchase_tax : existingPurchase.purchase_tax,
-      purchase_discount: typeof incoming.purchase_discount !== "undefined" ? incoming.purchase_discount : existingPurchase.purchase_discount,
+      purchase_tax:
+        typeof incoming.purchase_tax !== "undefined"
+          ? incoming.purchase_tax
+          : existingPurchase.purchase_tax,
+      purchase_discount:
+        typeof incoming.purchase_discount !== "undefined"
+          ? incoming.purchase_discount
+          : existingPurchase.purchase_discount,
       purchasedItems: incoming.purchasedItems,
       total_items_count: incoming.purchasedItems.length,
       grand_total: newGrandTotal,
       payment_due_amount: existingPurchase.payment_due_amount + deltaAmount, // adjust due vs previous
-      purchase_status: incoming.purchase_status || existingPurchase.purchase_status,
+      purchase_status:
+        incoming.purchase_status || existingPurchase.purchase_status,
       updated_at: new Date(),
     };
 
-    const updatedPurchase = await Purchase.findByIdAndUpdate(existingPurchase._id, safeUpdates, { new: true, session });
+    const updatedPurchase = await Purchase.findByIdAndUpdate(
+      existingPurchase._id,
+      safeUpdates,
+      { new: true, session }
+    );
 
     // ---------- Adjust supplier account (append-only) ----------
     const supplierAccount = await Account.findOne({
@@ -1671,7 +1860,8 @@ exports.updatePurchase = async (req, res) => {
 
     if (deltaAmount !== 0) {
       // follow your createPurchase convention: supplier.balance = supplier.balance - purchaseAmount
-      supplierAccount.balance = Number(supplierAccount.balance || 0) - deltaAmount;
+      supplierAccount.balance =
+        Number(supplierAccount.balance || 0) - deltaAmount;
       await supplierAccount.save({ session });
 
       const trans = new Transaction({
@@ -1705,7 +1895,12 @@ exports.updatePurchase = async (req, res) => {
     await session.commitTransaction();
     session.endSession();
 
-    return res.status(200).json({ message: "Purchase updated successfully", purchase: updatedPurchase });
+    return res
+      .status(200)
+      .json({
+        message: "Purchase updated successfully",
+        purchase: updatedPurchase,
+      });
   } catch (err) {
     console.error("updatePurchase error:", err);
     try {
@@ -1714,7 +1909,12 @@ exports.updatePurchase = async (req, res) => {
     } catch (e) {
       console.error("error aborting transaction", e);
     }
-    return res.status(500).json({ message: "Error updating purchase", error: String(err) });
+    return res
+      .status(500)
+      .json({
+        message: String(err) || "Error updating purchase",
+        error: String(err),
+      });
   }
 };
 
@@ -1761,7 +1961,7 @@ const createStockLedgerEntry = ({
   batch_number = null,
   unitCost = null,
   sellingPrice = null,
-  memo = ""
+  memo = "",
 }) => ({
   item_id,
   variant_id,
@@ -1775,5 +1975,5 @@ const createStockLedgerEntry = ({
   unitCost,
   sellingPrice,
   memo,
-  createdAt: new Date()
+  createdAt: new Date(),
 });

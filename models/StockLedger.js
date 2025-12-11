@@ -13,6 +13,7 @@ const StockLedgerSchema = new mongoose.Schema({
     type: String,
     enum: [
       "Purchase-In",
+      "Purchase-NonSerialized-Remove",
       "Purchase-Delete-Reverse",
       "Sale-Out",
       "Sale-Return-In",
