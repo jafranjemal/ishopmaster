@@ -98,7 +98,9 @@ exports.createPurchase1 = async (req, res) => {
           .sort()
           .join("-");
 
-        const variantName = `${baseItem.itemName} - ${attributesString}`;
+        const variantName = attributesString
+          ? `${baseItem.itemName} - ${attributesString}`.trim()
+          : baseItem.itemName.trim();
 
         console.log("item.itemName", item.itemName);
         console.log("variantName", variantName);
@@ -289,6 +291,10 @@ exports.createPurchase = async (req, res) => {
     const data = req.body;
 
     console.log("🔥 createPurchase DATA:", data);
+
+    // Force status to "Pending Verification" for stock integrity protocol
+    data.purchase_status = "Pending Verification";
+
     /* ------------------------------------------------
    1. VALIDATE SUPPLIER + INPUT DATA
 --------------------------------------------------*/
@@ -310,12 +316,15 @@ exports.createPurchase = async (req, res) => {
         const baseItem = await Item.findById(item.item_id).session(session);
         if (!baseItem) throw new Error("Base item not found.");
 
-        const attributesString = item.variantAttributes
+        const attributesString = (item.variantAttributes || [])
+          .filter(a => a && a.value)
           .map((a) => a.value.toUpperCase())
           .sort()
           .join("-");
 
-        const variantName = `${baseItem.itemName} - ${attributesString}`;
+        const variantName = attributesString
+          ? `${baseItem.itemName} - ${attributesString}`.trim()
+          : baseItem.itemName.trim();
 
         const variant = await ItemVariant.findOneAndUpdate(
           { item_id: item.item_id, variantName },
@@ -377,7 +386,8 @@ exports.createPurchase = async (req, res) => {
                 batch_number: batchNo,
                 unitCost: unit.unitCost,
                 sellingPrice: unit.sellingPrice,
-                status: "Available",
+                status: "Incoming",
+                condition: unit.condition || "Brand New",
               },
             ],
             { session }
@@ -408,7 +418,7 @@ exports.createPurchase = async (req, res) => {
             .session(session)
             .lean();
 
-          const ledgerEntry = createStockLedgerEntry({
+          const ledgerEntry = exports.createStockLedgerEntry({
             item_id: item.item_id,
             variant_id: item.variant_id,
             purchase_id: purchase[0]._id,
@@ -445,6 +455,9 @@ exports.createPurchase = async (req, res) => {
               unitCost: item.unitCost,
               sellingPrice: item.sellingPrice,
               batch_number: batchNo,
+              batch_number: batchNo,
+              status: "Incoming",
+              condition: item.condition || "Brand New",
             },
           ],
           { session }
@@ -473,7 +486,7 @@ exports.createPurchase = async (req, res) => {
           .session(session)
           .lean();
 
-        const ledgerEntry = createStockLedgerEntry({
+        const ledgerEntry = exports.createStockLedgerEntry({
           item_id: item.item_id,
           movementType: "Purchase-In",
           qty: item.purchaseQty,
@@ -490,23 +503,11 @@ exports.createPurchase = async (req, res) => {
     }
 
     /* ------------------------------------------------
-   6. SUPPLIER ACCOUNT UPDATE
---------------------------------------------------*/
-    supplierAcc.balance -= purchaseDoc.grand_total;
-    await supplierAcc.save({ session });
+    6. SUPPLIER ACCOUNT UPDATE (DEFERRED)
+    --------------------------------------------------*/
+    // Finance update deferred to verification step
 
-    await Transaction.create(
-      [
-        {
-          account_id: supplierAcc._id,
-          amount: purchaseDoc.grand_total * -1,
-          transaction_type: "Withdrawal",
-          reason: `Purchase: ${purchaseDoc.referenceNumber}`,
-          balance_after_transaction: supplierAcc.balance,
-        },
-      ],
-      { session }
-    );
+
 
     /* ------------------------------------------------
    7. AUDIT LOG
@@ -577,11 +578,49 @@ exports.getAllPurchases = async (req, res) => {
   try {
     const purchases = await Purchase.find()
       .sort({ _id: -1 })
-      .populate("supplier")
-      .populate("purchasedItems.item_id");
+      .populate("supplier", "business_name")
+      .populate("purchasedItems.item_id")
+      .populate("purchasedItems.variant_id");
     res.status(200).json(purchases);
   } catch (error) {
     res.status(500).json({ message: "Error retrieving purchases", error });
+  }
+};
+
+// Search purchases by S/N, IMEI, Barcode, or Ref
+exports.searchPurchases = async (req, res) => {
+  try {
+    const { query } = req.query;
+    if (!query) return res.json([]);
+
+    // 1. Find by Serial Number / IMEI in SerializedStock
+    const serializedStock = await SerializedStock.find({
+      serialNumber: { $regex: query, $options: "i" }
+    }, 'purchase_id').lean();
+    const purchaseIdsFromSerials = serializedStock.map(s => s.purchase_id);
+
+    // 2. Find by Barcode in Items
+    const items = await Item.find({
+      barcode: { $regex: query, $options: "i" }
+    }, '_id').lean();
+    const itemIds = items.map(i => i._id);
+
+    // 3. Perform the main search in Purchase
+    const purchases = await Purchase.find({
+      $or: [
+        { referenceNumber: { $regex: query, $options: "i" } },
+        { _id: { $in: purchaseIdsFromSerials } },
+        { "purchasedItems.item_id": { $in: itemIds } }
+      ]
+    })
+      .populate("supplier", "business_name")
+      .sort({ purchaseDate: -1 })
+      .limit(50);
+
+    res.json(purchases);
+  } catch (error) {
+    console.error("Search error:", error);
+    res.status(500).json({ message: "Error searching purchases" });
   }
 };
 
@@ -591,13 +630,168 @@ exports.getPurchaseById = async (req, res) => {
     const { id } = req.params;
     const purchase = await Purchase.findById(id)
       .populate("supplier")
-      .populate("purchasedItems.item_id");
+      .populate("purchasedItems.item_id")
+      .populate("purchasedItems.variant_id");
     if (!purchase) {
       return res.status(404).json({ message: "Purchase not found" });
     }
     res.status(200).json(purchase);
   } catch (error) {
     res.status(500).json({ message: "Error retrieving purchase", error });
+  }
+};
+
+/**
+ * verifyPurchasePhysical:
+ * Confirms that the physical stock matches the purchase order.
+ * Updates supplier account and logs discrepancies if necessary.
+ */
+exports.verifyPurchasePhysical = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+    const { actual_grand_total, verification_notes } = req.body;
+
+    const purchase = await Purchase.findById(id).session(session);
+    if (!purchase) throw new Error("Purchase not found");
+    if (purchase.purchase_status !== "Pending Verification") {
+      throw new Error(`Purchase cannot be verified. Current status: ${purchase.purchase_status}`);
+    }
+
+    const supplierAcc = await Account.findOne({
+      account_owner_type: "Supplier",
+      related_party_id: purchase.supplier,
+    }).session(session);
+
+    if (!supplierAcc) throw new Error("Supplier account not found");
+
+    const expectedTotal = purchase.grand_total;
+    const discrepancy = actual_grand_total - expectedTotal;
+
+    // Update Purchase Record
+    purchase.purchase_status = discrepancy === 0 ? "Received" : "Discrepancy";
+    purchase.verification_date = new Date();
+    purchase.verification_notes = verification_notes;
+    purchase.discrepancy_details = {
+      expected_grand_total: expectedTotal,
+      actual_grand_total: actual_grand_total,
+      mismatch_reason: verification_notes
+    };
+
+    await purchase.save({ session });
+
+
+    // --- LOG LEDGER MOVEMENTS (Unlocking from Pipeline) ---
+    for (const item of purchase.purchasedItems) {
+      if (item.isSerialized) {
+        for (const unit of (item.serializedItems || [])) {
+          const previousLedger = await StockLedger.findOne({ item_id: item.item_id })
+            .sort({ createdAt: -1 })
+            .session(session)
+            .lean();
+
+          const ledgerEntry = exports.createStockLedgerEntry({
+            item_id: item.item_id,
+            variant_id: item.variant_id,
+            purchase_id: purchase._id,
+            serialNumber: unit.serialNumber,
+            movementType: "Purchase-In",
+            qty: 1,
+            previousLedger,
+            batch_number: item.batch_number,
+            unitCost: unit.unitCost,
+            sellingPrice: unit.sellingPrice,
+            memo: `Verified Purchase: ${purchase.referenceNumber}`,
+          });
+          await StockLedger.create([ledgerEntry], { session });
+        }
+      } else {
+        const previousLedger = await StockLedger.findOne({ item_id: item.item_id })
+          .sort({ createdAt: -1 })
+          .session(session)
+          .lean();
+
+        const ledgerEntry = exports.createStockLedgerEntry({
+          item_id: item.item_id,
+          variant_id: item.variant_id,
+          purchase_id: purchase._id,
+          qty: item.purchaseQty,
+          movementType: "Purchase-In",
+          previousLedger,
+          batch_number: item.batch_number,
+          unitCost: item.unitCost,
+          sellingPrice: item.sellingPrice,
+          memo: `Verified Purchase: ${purchase.referenceNumber}`,
+        });
+        await StockLedger.create([ledgerEntry], { session });
+      }
+    }
+
+    // Update Stock Status to Available based on Verification
+    // Assuming verification accepts all for now, or we can implement detailed item-level verification later
+    // For this pass, we unlock ALL stock related to this purchase
+    await SerializedStock.updateMany(
+      { purchase_id: purchase._id },
+      { $set: { status: "Available" } },
+      { session }
+    );
+
+    await NonSerializedStock.updateMany(
+      { purchase_id: purchase._id },
+      { $set: { status: "Available" } },
+      { session }
+    );
+
+    // Update Finance Ledger (Actual Received Amount)
+    supplierAcc.balance -= actual_grand_total;
+    await supplierAcc.save({ session });
+
+    await Transaction.create(
+      [
+        {
+          account_id: supplierAcc._id,
+          amount: actual_grand_total * -1,
+          transaction_type: "Withdrawal",
+          reason: `Verified Purchase: ${purchase.referenceNumber} ${discrepancy !== 0 ? "(Discrepancy Logged)" : ""}`,
+          balance_after_transaction: supplierAcc.balance,
+        },
+      ],
+      { session }
+    );
+
+    // If discrepancy, log to DiscrepancyLog
+    if (discrepancy !== 0) {
+      const DiscrepancyLog = require("../models/DiscrepancyLog");
+      await DiscrepancyLog.create([
+        {
+          type: "Purchase",
+          category: discrepancy < 0 ? "Short Shipment" : "Over Shipment",
+          reference_id: purchase._id,
+          field_name: "grand_total",
+          expected_value: expectedTotal,
+          actual_value: actual_grand_total,
+          delta: discrepancy,
+          reason: verification_notes,
+          user_id: req.user?._id
+        }
+      ], { session });
+    }
+
+    await session.commitTransaction();
+    res.status(200).json({
+      message: "Purchase verified and stock finalized.",
+      purchase,
+      discrepancy
+    });
+
+  } catch (err) {
+    await session.abortTransaction();
+    console.error("🔥 verifyPurchasePhysical ERROR:", err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    session.endSession();
   }
 };
 
@@ -1271,7 +1465,10 @@ exports.deletePurchase = async (req, res) => {
       }
     }
 
-    // Reverse supplier account changes
+    // New: Remove all related StockLedger entries
+    await StockLedger.deleteMany({ purchase_id: purchaseId });
+
+    // Reverse supplier account changes - ONLY if verification happened
     const supplierAccount = await Account.findOne({
       account_owner_type: "Supplier",
       related_party_id: existingPurchase.supplier,
@@ -1281,17 +1478,22 @@ exports.deletePurchase = async (req, res) => {
       return res.status(404).json({ message: "Supplier account not found" });
     }
 
-    supplierAccount.balance += existingPurchase.grand_total;
-    await supplierAccount.save();
+    // Determine the exact amount that was deducted from the supplier balance during verification or creation
+    // If it reached "Received" or "Discrepancy", it used actual_grand_total (if discrepancy) or grand_total
+    if (["Received", "Discrepancy"].includes(existingPurchase.purchase_status)) {
+      const amountToRevert = existingPurchase.discrepancy_details?.actual_grand_total ?? existingPurchase.grand_total;
+      supplierAccount.balance += amountToRevert;
+      await supplierAccount.save();
+    }
 
     // Delete purchase
     await Purchase.findByIdAndDelete(purchaseId);
 
     // Remove transaction record
+    // Using regex for reason to match both "Purchase: [REF]" and "Verified Purchase: [REF]"
     await Transaction.deleteOne({
       account_id: supplierAccount._id,
-      amount: existingPurchase.grand_total * -1,
-      reason: `Purchase: ${existingPurchase.referenceNumber}`,
+      reason: { $regex: existingPurchase.referenceNumber },
     });
 
     res.status(200).json({ message: "Purchase deleted successfully" });
@@ -1406,9 +1608,9 @@ exports.updatePurchase = async (req, res) => {
           Number(oldSi.sellingPrice || 0) !== Number(newSi.sellingPrice || 0) ||
           String(oldSi.variant_id || "") !== String(newSi.variant_id || "") ||
           String(oldSi.batch_number || "") !==
-            String(newSi.batch_number || "") ||
+          String(newSi.batch_number || "") ||
           Number(oldSi.batteryHealth || 0) !==
-            Number(newSi.batteryHealth || 0) ||
+          Number(newSi.batteryHealth || 0) ||
           String(oldSi.condition || "") !== String(newSi.condition || "");
         if (changed)
           modifiedSerials.push({
@@ -1691,14 +1893,14 @@ exports.updatePurchase = async (req, res) => {
 
       if (deltaQty > 0) {
         // create new NonSerializedStock entry for delta
-       
+
         await NonSerializedStock.create(
           [
             {
               item_id: newLine.item_id,
               purchase_id: existingPurchase._id,
               batch_number:
-               finalBatchNumber,
+                finalBatchNumber,
               purchaseDate:
                 incoming.purchaseDate || existingPurchase.purchaseDate,
               purchaseQty: deltaQty,
@@ -1811,7 +2013,7 @@ exports.updatePurchase = async (req, res) => {
         afterDiscount +
         (afterDiscount *
           Number(incoming.purchase_tax || existingPurchase.purchase_tax || 0)) /
-          100;
+        100;
       return Number(afterTax.toFixed(2));
     };
 
@@ -1950,7 +2152,7 @@ const makeLedgerEntry = ({
   };
 };
 
-const createStockLedgerEntry = ({
+exports.createStockLedgerEntry = ({
   item_id,
   variant_id = null,
   purchase_id = null,

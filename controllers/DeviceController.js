@@ -24,10 +24,10 @@ class DeviceController {
   static async getAllDevices(req, res) {
     try {
       const devices = await Device.find()
-      .populate('owner')
-      .populate('brandId')
-      .populate('modelId');
-      
+        .populate('owner')
+        .populate('brandId')
+        .populate('modelId');
+
       res.status(200).json(devices);
     } catch (error) {
       res.status(500).json({ message: error.message });
@@ -87,9 +87,9 @@ class DeviceController {
       const { serialNumber } = req.params;
       const existingDevice = await Device.findOne({ serialNumber });
       if (existingDevice) {
-        return res.status(200).json({ exists: true });
+        return res.status(200).json(existingDevice);
       }
-      res.status(200).json({ exists: false });
+      res.status(200).json(null);
     } catch (error) {
       res.status(500).json({ message: error.message });
     }

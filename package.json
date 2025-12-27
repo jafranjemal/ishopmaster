@@ -18,7 +18,7 @@
     "socket.io": "^4.8.1"
   },
   "scripts": {
-    "start": "node --watch server.js"
+    "start": "nodemon server.js"
   },
   "name": "api",
   "version": "1.0.1",

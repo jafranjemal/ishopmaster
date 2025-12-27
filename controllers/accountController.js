@@ -8,31 +8,31 @@ exports.createAccount = async (req, res) => {
     const { account_name, account_type, balance, account_owner_type, related_party_id, description } = req.body;
 
     // const newAccount = new Account({ account_name, account_type, balance, description });
-   
-     // Create a new account using the data from the request body
-     const newAccount = new Account({
-        account_name,
-        account_type,
-        balance: balance || 0,  // Default to 0 if balance is not provided
-        account_owner_type: account_owner_type || "Company",  // Default to "Company"
-        related_party_id,
-        description: description || "",
-      });
+
+    // Create a new account using the data from the request body
+    const newAccount = new Account({
+      account_name,
+      account_type,
+      balance: balance || 0,  // Default to 0 if balance is not provided
+      account_owner_type: account_owner_type || "Company",  // Default to "Company"
+      related_party_id,
+      description: description || "",
+    });
 
 
     await newAccount.save();
 
-    if(Number(balance) > 0){
-        const transaction = new Transaction({
-            account_id: newAccount._id,
-            amount: balance,
-            transaction_type: "Deposit",
-            reason: "Initial Balance",
-            balance_after_transaction: balance, // Balance after the deposit
-          });
+    if (Number(balance) > 0) {
+      const transaction = new Transaction({
+        account_id: newAccount._id,
+        amount: balance,
+        transaction_type: "Deposit",
+        reason: "Initial Balance",
+        balance_after_transaction: balance, // Balance after the deposit
+      });
 
-          await transaction.save();
-      
+      await transaction.save();
+
     }
 
     res.status(201).json({ message: "Account created successfully", account: newAccount });
@@ -86,5 +86,19 @@ exports.deleteAccount = async (req, res) => {
     res.status(200).json({ message: "Account deleted successfully" });
   } catch (error) {
     res.status(500).json({ message: "Error deleting account", error });
+  }
+};
+// Get Account by Owner Type and Related Party ID
+exports.getAccountByOwner = async (req, res) => {
+  try {
+    const { type, id } = req.params;
+    const account = await Account.findOne({
+      account_owner_type: type,
+      related_party_id: id,
+    });
+    if (!account) return res.status(404).json({ message: "Account not found" });
+    res.status(200).json(account);
+  } catch (error) {
+    res.status(500).json({ message: "Error fetching account", error });
   }
 };

@@ -4,171 +4,72 @@ const Account = require("../models/Account");
 const mongoose = require('mongoose');
 
 exports.createTransaction = async (req, res) => {
-    try {
-      const { account_id, amount, transaction_type, reason } = req.body;
-  
-      if (!account_id || !amount || !transaction_type || !reason) {
-        return res.status(400).json({ message: "All fields are required" });
-      }
-  
-      if (amount <= 0) {
-        return res.status(400).json({ message: "Amount must be positive" });
-      }
-  
-      if (!["Deposit", "Withdrawal"].includes(transaction_type)) {
-        return res.status(400).json({ message: "Invalid transaction type" });
-      }
-  
-      // Fetch the account
-      const account = await Account.findById(account_id);
-      if (!account) {
-        return res.status(404).json({ message: "Account not found" });
-      }
-  
-      // Calculate balance after transaction
-      let balance_after_transaction;
-      if (transaction_type === "Deposit") {
-        balance_after_transaction = account.balance + amount;
-      } else if (transaction_type === "Withdrawal") {
-        
-        if (account.account_owner_type !== "Supplier" && account.balance < amount) {  // Deposit and Withdrawal can be any amount for Suppliers
-          return res.status(400).json({ message: "Insufficient balance for withdrawal" });
-        }
-        balance_after_transaction = account.balance - amount;
-      }
-  
-      // Update the account balance
-      account.balance = balance_after_transaction;
-      await account.save();
-  
-      // Create the transaction
-      const newTransaction = new Transaction({
-        account_id,
-        amount : transaction_type === "Withdrawal" ? amount *-1 : amount,
-        transaction_type,
-        reason,
-        balance_after_transaction,
-      });
-      await newTransaction.save();
-  
-      res.status(201).json({
-        message: "Transaction created successfully",
-        transaction: newTransaction,
-      });
-    } catch (error) {
-      res.status(500).json({ message: "Error creating transaction", error });
+  try {
+    const { account_id, amount, transaction_type, reason } = req.body;
+
+    if (!account_id || !amount || !transaction_type || !reason) {
+      return res.status(400).json({ message: "All fields are required" });
     }
-  };
-  
 
-// exports.createTransaction = async (req, res) => {
-//   const session = await mongoose.startSession();
-//   session.startTransaction();
+    if (amount <= 0) {
+      return res.status(400).json({ message: "Amount must be positive" });
+    }
 
-//   try {
-//     const { account_id, amount, transaction_type, reason } = req.body;
+    if (!["Deposit", "Withdrawal"].includes(transaction_type)) {
+      return res.status(400).json({ message: "Invalid transaction type" });
+    }
 
-//     // Validate input fields
-//     if (!account_id || !amount || !transaction_type || !reason) {
-//       return res.status(400).json({ message: "All fields are required" });
-//     }
+    // Fetch the account
+    const account = await Account.findById(account_id);
+    if (!account) {
+      return res.status(404).json({ message: "Account not found" });
+    }
 
-//     if (amount <= 0) {
-//       return res.status(400).json({ message: "Amount must be positive" });
-//     }
+    // Calculate balance after transaction
+    let balance_after_transaction;
+    if (transaction_type === "Deposit") {
+      balance_after_transaction = account.balance + amount;
+    } else if (transaction_type === "Withdrawal") {
 
-//     if (!["Deposit", "Withdrawal"].includes(transaction_type)) {
-//       return res.status(400).json({ message: "Invalid transaction type" });
-//     }
+      if (account.account_owner_type !== "Supplier" && account.balance < amount) {  // Deposit and Withdrawal can be any amount for Suppliers
+        return res.status(400).json({ message: "Insufficient balance for withdrawal" });
+      }
+      balance_after_transaction = account.balance - amount;
+    }
 
-//     // Fetch the account and validate
-//     const account = await Account.findById(account_id).session(session);
-//     if (!account) {
-//       return res.status(404).json({ message: "Account not found" });
-//     }
+    // Update the account balance
+    account.balance = balance_after_transaction;
+    await account.save();
 
-//     // Calculate balance after transaction
-//     let balance_after_transaction;
-//     if (transaction_type === "Deposit") {
-//       balance_after_transaction = account.balance + amount;
-//     } else if (transaction_type === "Withdrawal") {
-//       if (account.balance < amount) {
-//         return res.status(400).json({ message: "Insufficient balance for withdrawal" });
-//       }
-//       balance_after_transaction = account.balance - amount;
-//     }
+    // Create the transaction
+    const newTransaction = new Transaction({
+      account_id,
+      amount: transaction_type === "Withdrawal" ? amount * -1 : amount,
+      transaction_type,
+      reason,
+      balance_after_transaction,
+    });
+    await newTransaction.save();
 
-//     // Create the transaction
-//     const newTransaction = new Transaction({
-//       account_id,
-//       amount,
-//       transaction_type,
-//       reason,
-//       balance_after_transaction,
-//     });
+    res.status(201).json({
+      message: "Transaction created successfully",
+      transaction: newTransaction,
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Error creating transaction", error });
+  }
+};
 
-//     await newTransaction.save({ session });
 
-//     // Update the account balance
-//     account.balance = balance_after_transaction;
-//     await account.save({ session });
-
-//     // Commit transaction
-//     await session.commitTransaction();
-//     session.endSession();
-
-//     res.status(201).json({
-//       message: "Transaction created successfully",
-//       transaction: newTransaction,
-//     });
-//   } catch (error) {
-//     await session.abortTransaction();
-//     session.endSession();
-//     res.status(500).json({ message: "Error creating transaction", error });
-//   }
-// };
-
-// API to create a new transaction
-// exports.createTransaction = async (req, res) => {
-//   try {
-//     const { account_id, amount, transaction_type, reason } = req.body;
-
-//     // Check if the account exists
-//     const account = await Account.findById(account_id);
-//     if (!account) {
-//       return res.status(404).json({ message: "Account not found" });
-//     }
-
-//     // Create the transaction
-//     const newTransaction = new Transaction({
-//       account_id,
-//       amount,
-//       transaction_type,
-//       reason,
-//       balance_after_transaction,
-//     });
-
-//     await newTransaction.save();
-
-//     // Update the account's balance after the transaction
-//     let updatedBalance = 0;
-//     if (transaction_type === "Deposit") {
-//       updatedBalance = account.balance + amount;
-//     } else if (transaction_type === "Withdrawal") {
-//       updatedBalance = account.balance - amount;
-//     }
-
-//     account.balance = updatedBalance;
-//     await account.save();
-
-//     res.status(201).json({
-//       message: "Transaction created successfully",
-//       transaction: newTransaction,
-//     });
-//   } catch (error) {
-//     res.status(500).json({ message: "Error creating transaction", error });
-//   }
-// };
+// API to get all transactions
+exports.getAllTransactions = async (req, res) => {
+  try {
+    const transactions = await Transaction.find().populate('account_id').sort({ date: -1 });
+    res.status(200).json(transactions);
+  } catch (error) {
+    res.status(500).json({ message: "Error retrieving transactions", error });
+  }
+};
 
 // API to get all transactions for an account
 exports.getTransactionsByAccount = async (req, res) => {
@@ -178,9 +79,7 @@ exports.getTransactionsByAccount = async (req, res) => {
     // Find all transactions for the account
     const transactions = await Transaction.find({ account_id }).populate('account_id');
     res.status(200).json(
-
-        transactions
-    
+      transactions
     );
   } catch (error) {
     res.status(500).json({ message: "Error retrieving transactions", error });
@@ -206,7 +105,7 @@ exports.getTransactionById = async (req, res) => {
   }
 };
 
-// API to update a transaction (e.g., for editing a withdrawal/deposit)
+// API to update a transaction (if allowed)
 exports.updateTransaction = async (req, res) => {
   try {
     const { id } = req.params;
@@ -246,17 +145,22 @@ exports.deleteTransaction = async (req, res) => {
       return res.status(404).json({ message: "Transaction not found" });
     }
 
-    // Delete the transaction
-    await transaction.remove();
-
-    // Optionally, update the account balance
+    // Optionally, update the account balance - REVERTING transaction effect
     const account = await Account.findById(transaction.account_id);
-    if (transaction.transaction_type === "Deposit") {
-      account.balance -= transaction.amount;
-    } else if (transaction.transaction_type === "Withdrawal") {
-      account.balance += transaction.amount;
+    if (account) {
+      if (transaction.transaction_type === "Deposit") {
+        // Amount is positive. Subtract to revert.
+        account.balance -= transaction.amount;
+      } else if (transaction.transaction_type === "Withdrawal") {
+        // Amount is negative. Subtracting total_amount (which is negative) adds it back.
+        // OR: balance = balance + Math.abs(amount)
+        account.balance += Math.abs(transaction.amount);
+      }
+      await account.save();
     }
-    await account.save();
+
+    // Delete the transaction
+    await Transaction.findByIdAndDelete(id);
 
     res.status(200).json({
       message: "Transaction deleted successfully",

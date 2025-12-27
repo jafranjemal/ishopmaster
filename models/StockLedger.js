@@ -15,6 +15,7 @@ const StockLedgerSchema = new mongoose.Schema({
       "Purchase-In",
       "Purchase-NonSerialized-Remove",
       "Purchase-Delete-Reverse",
+      "Purchase-Return-Out",
       "Sale-Out",
       "Sale-Return-In",
       "Adjustment-In",

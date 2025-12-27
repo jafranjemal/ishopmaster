@@ -6,7 +6,7 @@ var cors = require("cors");
 const cron = require('node-cron');
 const socketIo = require("socket.io");
 require('dotenv').config();
- 
+
 const { seedDatabase } = require('./seed');
 const app = express();
 const server = http.createServer(app);
@@ -16,14 +16,27 @@ const server = http.createServer(app);
 //     }
 //   });
 
-const io = socketIo(server);
+const io = socketIo(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"],
+  },
+});
+
+app.set("socketio", io);
+
 const PORT = process.env.PORT || 5000;
 
 // Middleware
- 
+
 app.use(bodyParser.json({ limit: "5mb" }));
 app.use(bodyParser.urlencoded({ limit: "5mb", extended: true }));
-app.use(cors())
+app.use(cors({
+  origin: "*",
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
+  credentials: true
+}));
+
 
 
 // Database Connection
@@ -61,7 +74,11 @@ const deviceInspectionRoutes = require("./routes/deviceInspectionRoutes");
 const reportedIssueRoutes = require("./routes/reportedIssueRoutes");
 const serializedStockRoutes = require("./routes/serializedStock");
 const noneSerializedStockRoutes = require("./routes/nonSerializedStock");
-const dashboardRoutes = require("./routes/dashboard.routes");
+const dashboardRoutes = require("./routes/dashboard/dashboardRoutes");
+const stockLedgerRoutes = require("./routes/stockLedgerRoutes");
+const warrantyRoutes = require("./routes/warrantyRoutes");
+const purchaseReturnRoutes = require("./routes/purchaseReturnRoutes");
+const systemRoutes = require("./routes/systemRoutes");
 
 app.use('/api/items', productRoutes);
 app.use("/api/suppliers", supplierRoutes);
@@ -83,6 +100,7 @@ app.use("/api/sales-invoices", salesInvoiceRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/shifts", shiftsRoutes);
 app.use('/api/permissions', permissionRoutes);
+app.use('/api/system', require('./routes/systemRoutes')); // System setup routes (public)
 app.use('/api/auth', authRoutes);
 app.use('/api/role', roleRoutes);
 app.use("/api/tickets", ticketRoutes);
@@ -93,6 +111,10 @@ app.use("/api/devices", deviceRoutes);
 app.use("/api/device-inspections", deviceInspectionRoutes);
 app.use("/api/reported-issues", reportedIssueRoutes);
 app.use("/api/dashboard", dashboardRoutes);
+app.use("/api/stock-ledger", stockLedgerRoutes);
+app.use("/api/warranties", warrantyRoutes);
+app.use("/api/purchase-returns", purchaseReturnRoutes);
+app.use("/api/system", systemRoutes);
 
 app.post('/api/print-barcodes', async (req, res) => {
   const { items } = req.body;
@@ -108,7 +130,7 @@ app.post('/api/print-barcodes', async (req, res) => {
         includetext: true, // Show human-readable text
         textxalign: 'center', // Always good to set this
       });
-      barcodes.push({ sellingPrice: item.lastSellingPrice, itemName:item.itemName,  barcode: item.barcode, buffer: barcodeBuffer.toString('base64') });
+      barcodes.push({ sellingPrice: item.lastSellingPrice, itemName: item.itemName, barcode: item.barcode, buffer: barcodeBuffer.toString('base64') });
     }
     res.json({ success: true, barcodes });
   } catch (error) {
@@ -128,46 +150,46 @@ app.post('/api/print-barcodes', async (req, res) => {
 
 // Handle Socket.IO connections
 io.on("connection", (socket) => {
-    console.log("A user connected:", socket.id);
-  
-    setInterval(
-        () => sendNotification(socket),
-        10000
-      );
-    
-    // Disconnect event
-    socket.on("disconnect", () => {
-      console.log("User disconnected:", socket.id);
-    });
+  console.log("A user connected:", socket.id);
+
+  setInterval(
+    () => sendNotification(socket),
+    10000
+  );
+
+  // Disconnect event
+  socket.on("disconnect", () => {
+    console.log("User disconnected:", socket.id);
   });
-  
-  // Broadcast notifications to connected clients
-  function sendNotification(notification) {
-    try{
+});
 
-        io.emit("new-notification", notification); // Broadcast to all connected clients
-    }catch(x){
-        console.error(`Error: ${x}`);
-    }
-  };
+// Broadcast notifications to connected clients
+function sendNotification(notification) {
+  try {
 
-
-  app.get("/", (req, res) => {
-    res.send({ response: "I am alive" }).status(200);
-  });
-
-  app.get("/seed", async (req, res) => {
-    try {
-      await seedDatabase();
-      res.status(200).send({ message: "Database seeded successfully" });
-    } catch (error) {
-      console.error(error);
-      res.status(500).send({ message: "Error seeding database" });
-    }
-  });
+    io.emit("new-notification", notification); // Broadcast to all connected clients
+  } catch (x) {
+    console.error(`Error: ${x}`);
+  }
+};
 
 
-  // Error handling middleware
+app.get("/", (req, res) => {
+  res.send({ response: "I am alive" }).status(200);
+});
+
+app.get("/seed", async (req, res) => {
+  try {
+    await seedDatabase();
+    res.status(200).send({ message: "Database seeded successfully" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ message: "Error seeding database" });
+  }
+});
+
+
+// Error handling middleware
 // app.use((err, req, res, next) => {
 //   // Handle the error here
 //   res.status(err.status || 500).send({ message: err.message });
@@ -175,7 +197,7 @@ io.on("connection", (socket) => {
 
 app.use(errorHandler);
 
-  // Unhandled promise rejections
+// Unhandled promise rejections
 process.on('unhandledRejection', (err) => {
   console.log('UNHANDLED REJECTION! 💥 Shutting down...');
   console.error('Error:', err);
@@ -191,10 +213,14 @@ process.on('uncaughtException', (err) => {
   process.exit(1);
 });
 
- 
+
 const dbType = process.env.NODE_ENV === 'production' ? 'Cloud' : 'Local';
 
-app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT} in ${process.env.NODE_ENV} environment with ${dbType} database`));
-//app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
-io.listen(4000);
-module.exports = {sendNotification};
+if (require.main === module) {
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://0.0.0.0:${PORT} in ${process.env.NODE_ENV} environment with ${dbType} database`);
+  });
+  io.listen(4000);
+}
+
+module.exports = { sendNotification, app, server, io };

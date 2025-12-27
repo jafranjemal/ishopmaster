@@ -11,20 +11,28 @@ const purchaseSchema = new mongoose.Schema({
   purchase_tax: { type: Number, default: 0 },
   purchase_discount: { type: Number, default: 0 },
   additional_notes: { type: String },
-  purchase_status: { 
-    type: String, 
-    enum: ["Received", "Pending", "Cancelled"], 
-    default: "Pending",
+  purchase_status: {
+    type: String,
+    enum: ["Received", "Pending Verification", "Cancelled", "Discrepancy"],
+    default: "Pending Verification",
   },
-  payment_status: { 
-    type: String, 
-    enum: ["Not Paid", "Partial", "Paid"], 
+  verification_date: { type: Date },
+  verification_notes: { type: String },
+  discrepancy_details: {
+    expected_grand_total: { type: Number },
+    actual_grand_total: { type: Number },
+    mismatch_reason: { type: String }
+  },
+  payment_status: {
+    type: String,
+    enum: ["Not Paid", "Partial", "Paid"],
     default: "Not Paid",
   },
   payment_due_amount: { type: Number, default: 0 },
   purchasedItems: [
     {
       item_id: { type: mongoose.Schema.Types.ObjectId, ref: "Item", required: true },
+      variant_id: { type: mongoose.Schema.Types.ObjectId, ref: "ItemVariant" },
       purchaseQty: { type: Number, required: true },
       discount: { type: Number, default: 0 },
       unitCost: { type: Number, required: true },
@@ -33,8 +41,8 @@ const purchaseSchema = new mongoose.Schema({
       profitMargin: { type: Number, required: false },
       sellingPrice: { type: Number, required: true },
       batch_number: { type: String, required: true }, // Unique Batch ID
-      isSerialized: {type:Boolean, default:false},
-      serializedItems:[ 
+      isSerialized: { type: Boolean, default: false },
+      serializedItems: [
       ]
     },
   ],
@@ -44,4 +52,4 @@ const purchaseSchema = new mongoose.Schema({
 
 const Purchase = mongoose.model("Purchase", purchaseSchema);
 module.exports = Purchase;
- 
+

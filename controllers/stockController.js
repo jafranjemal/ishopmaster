@@ -8,6 +8,7 @@ const Items = require("../models/Items");
 const ItemVariant = require("../models/ItemVariantSchema");
 const StockLedger = require("../models/StockLedger");
 const Purchase = require("../models/Purchase");
+const SalesInvoice = require("../models/SalesInvoice");
 
 exports.getItemStockDetails = async (req, res) => {
   try {
@@ -64,7 +65,10 @@ exports.getItemStockDetails = async (req, res) => {
       // Fetch non-serialized stock details
       stockDetails = await NonSerializedStock.aggregate([
         {
-          $match: { item_id: new mongoose.Types.ObjectId(itemId) },
+          $match: {
+            item_id: new mongoose.Types.ObjectId(itemId),
+            status: "Available"
+          },
         },
         {
           $group: {
@@ -315,6 +319,9 @@ exports.getAllItemsWithStock = async (req, res) => {
   try {
     const result = await Stock.aggregate([
       {
+        $match: { status: "Available" }
+      },
+      {
         $lookup: {
           from: "items",
           localField: "item_id",
@@ -339,15 +346,15 @@ exports.getAllItemsWithStock = async (req, res) => {
           batches: {
             $push: {
               batch_number: "$batch_number",
-              availableQty: "$availableQty",
-              purchaseDate: "$purchaseDate",
-              unitCost: "$unitCost",
-              sellingPrice: "$sellingPrice",
+              availableQty: "$available_qty",
+              purchaseDate: "$purchase_date",
+              unitCost: "$unit_cost",
+              sellingPrice: "$selling_price",
             },
           },
-          totalStock: { $sum: "$availableQty" },
-          lastUnitCost: { $last: "$unitCost" },
-          lastSellingPrice: { $last: "$sellingPrice" },
+          totalStock: { $sum: "$available_qty" },
+          lastUnitCost: { $last: "$unit_cost" },
+          lastSellingPrice: { $last: "$selling_price" },
           serialized: { $last: "$serialized" },
           itemDetails: { $first: "$itemDetails" },
         },
@@ -839,7 +846,7 @@ exports.getUnifiedStock2 = async (req, res) => {
       {
         $unwind: {
           path: "$purchase_info",
-          preserveNullAndEmptyArrays: true, // Keep docs if no purchase found
+          preserveNullAndEmptyArrays: true,
         },
       },
       {
@@ -1283,8 +1290,60 @@ exports.getUnifiedStock3 = async (req, res) => {
 // Controller: getUnifiedStock (variant-first, field-complete, correct totals)
 exports.getUnifiedStock = async (req, res) => {
   try {
-    // 1) Load all items (lean to keep plain objects and all fields)
-    const items = await Items.find().lean();
+    const { search, page, limit, category } = req.query;
+
+    // 1) Load items with optional search and pagination
+    let query = {};
+
+    // Apply category filter if provided and not "All"
+    if (category && category !== "All") {
+      query.category = category;
+    }
+
+    if (search) {
+      const tokens = search.split(/\s+/).filter((t) => t.length > 0);
+      if (tokens.length > 0) {
+        // Find item IDs matching any token as a serial number (sub-search)
+        const potentialSerialTokens = tokens.filter((t) => t.length >= 5);
+        let serialItemIds = [];
+        if (potentialSerialTokens.length > 0) {
+          const matchingSerials = await SerializedStock.find(
+            {
+              serialNumber: {
+                $in: potentialSerialTokens.map((t) => new RegExp(t, "i")),
+              },
+            },
+            "item_id"
+          ).lean();
+          serialItemIds = matchingSerials.map((s) => s.item_id);
+        }
+
+        const regexes = tokens.map((t) => new RegExp(t, "i"));
+        query.$or = [
+          {
+            $and: regexes.map((re) => ({
+              $or: [{ itemName: re }, { barcode: re }],
+            })),
+          },
+          { _id: { $in: serialItemIds } },
+        ];
+      }
+    }
+
+    let itemsQuery = Items.find(query).lean();
+
+    // Support pagination if requested
+    if (page && limit) {
+      const skip = (parseInt(page) - 1) * parseInt(limit);
+      itemsQuery = itemsQuery.skip(skip).limit(parseInt(limit));
+    } else if (!search) {
+      // If no search and no pagination, maybe limit to a reasonable amount to prevent crash
+      // But user said "careful if old api already cna access this", 
+      // so if no params are passed, we shouldn't break existing "load all" behavior unless it's strictly necessary.
+      // itemsQuery = itemsQuery.limit(500); 
+    }
+
+    const items = await itemsQuery;
     const itemIds = items.map((i) => i._id);
 
     // 2) Load all variants for these items and bucket by item_id
@@ -1532,37 +1591,29 @@ exports.getUnifiedStock = async (req, res) => {
           });
         }
 
-        // Additionally, include a "base item" row that aggregates non-serialized stock
+        // Additionally, include a "base item" row ONLY if it has non-serialized stock OR 
+        // if there is serialized stock that isn't tied to any specific variant (serNoVar).
+        // This prevents showing a redundant "Base" row for items that are fully variant-tracked.
         const serNoVar = serMap.get(`${itemKey}__null`);
         const ns = nonSerMap.get(itemKey);
-        //base item for non variants
-        result.push({
-          ...item,
-          _id: item._id,
-          isSerialized: item.serialized,
-          isVariant: false,
-          isBase: true,
-          variant_id: null,
-          itemName: item.itemName,
-          variantName: null,
-          variantAttributes: [],
-          sku: null,
-          barcode: item.barcode,
-          defaultSellingPrice: item.defaultSellingPrice || 0,
-          variantLastUnitCost: 0,
-
-          // Combine totals for items with no variants
-          totalStock: (ns?.totalStock || 0) + (serNoVar?.totalAvailable || 0),
-          lastSellingPrice:
-            serNoVar?.lastSellingPrice ?? ns?.lastSellingPrice ?? 0,
-          lastUnitCost: serNoVar?.lastUnitCost ?? ns?.lastUnitCost ?? 0,
-
-          serializedItems: serNoVar?.stockUnits || [],
-          // Merge batch views (heterogeneous entries: serialized vs non-serialized)
-          batches: [...(ns?.batches || []), ...(serNoVar?.batches || [])],
-
-          nonSerialized: ns || null,
-        });
+        if ((ns && ns.totalStock > 0) || (serNoVar && serNoVar.totalAvailable > 0)) {
+          result.push({
+            ...item,
+            _id: item._id,
+            isSerialized: item.serialized,
+            isVariant: false,
+            isBase: true,
+            variant_id: null,
+            itemName: item.itemName,
+            variantName: null,
+            variantAttributes: [],
+            totalStock: (ns?.totalStock || 0) + (serNoVar?.totalAvailable || 0),
+            lastSellingPrice: serNoVar?.lastSellingPrice || ns?.lastSellingPrice || item.pricing?.sellingPrice || 0,
+            lastUnitCost: serNoVar?.lastUnitCost || ns?.lastUnitCost || 0,
+            batches: [...(ns?.batches || []), ...(serNoVar?.batches || [])],
+            serializedItems: serNoVar?.batches || [],
+          });
+        }
       } else {
         // No variants: return a single base item row merging both flows
         const ns = nonSerMap.get(itemKey);
@@ -1685,6 +1736,31 @@ exports.getItemStockOverview = async (req, res) => {
         },
       },
       { $unwind: { path: "$supplier", preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: "salesinvoices",
+          let: { serial: "$serialNumber", status: "$status" },
+          pipeline: [
+            { $match: { $expr: { $eq: ["$$status", "Sold"] } } },
+            { $unwind: "$items" },
+            { $match: { $expr: { $in: ["$$serial", { $ifNull: ["$items.serialNumbers", []] }] } } },
+            { $project: { invoice_id: 1, invoice_date: 1, customer: 1, soldPrice: "$items.price" } },
+            { $sort: { invoice_date: -1 } },
+            { $limit: 1 }
+          ],
+          as: "saleInfo"
+        }
+      },
+      { $unwind: { path: "$saleInfo", preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: "customers",
+          localField: "saleInfo.customer",
+          foreignField: "_id",
+          as: "customerInfo"
+        }
+      },
+      { $unwind: { path: "$customerInfo", preserveNullAndEmptyArrays: true } },
     ]);
 
     // ---------------------------------------------------
@@ -1727,7 +1803,69 @@ exports.getItemStockOverview = async (req, res) => {
       : 0;
 
     // ---------------------------------------------------
-    // 6. FINAL STRUCTURED RESPONSE
+    // 5. FETCH SALES HISTORY (Last 50)
+    // ---------------------------------------------------
+    const salesHistory = await SalesInvoice.aggregate([
+      { $match: { "items.item_id": new mongoose.Types.ObjectId(itemId) } },
+      { $sort: { invoice_date: -1 } },
+      { $limit: 50 },
+      { $lookup: { from: "customers", localField: "customer", foreignField: "_id", as: "customer" } },
+      { $unwind: { path: "$customer", preserveNullAndEmptyArrays: true } },
+      {
+        $project: {
+          invoice_id: 1,
+          invoice_date: 1,
+          customer: { firstName: 1, lastName: 1, phone: 1 },
+          // Extract specific item details from the array
+          items: {
+            $filter: {
+              input: "$items",
+              as: "item",
+              cond: { $eq: ["$$item.item_id", new mongoose.Types.ObjectId(itemId)] }
+            }
+          }
+        }
+      }
+    ]);
+
+    // ---------------------------------------------------
+    // 6. SERIALIZED BATCHES AGGREGATION
+    // ---------------------------------------------------
+    let serializedBatches = [];
+    if (item.serialized) {
+      serializedBatches = await SerializedStock.aggregate([
+        { $match: { item_id: new mongoose.Types.ObjectId(itemId) } },
+        {
+          $group: {
+            _id: "$batch_number",
+            batch_number: { $first: "$batch_number" },
+            purchase_id: { $first: "$purchase_id" },
+            unitCost: { $first: "$unitCost" },
+            sellingPrice: { $first: "$sellingPrice" },
+            totalQty: { $sum: 1 },
+            availableQty: { $sum: { $cond: [{ $eq: ["$status", "Available"] }, 1, 0] } },
+            soldQty: { $sum: { $cond: [{ $eq: ["$status", "Sold"] }, 1, 0] } }
+          }
+        },
+        {
+          $lookup: { from: "purchases", localField: "purchase_id", foreignField: "_id", as: "purchase" }
+        },
+        { $unwind: { path: "$purchase", preserveNullAndEmptyArrays: true } },
+        {
+          $lookup: {
+            from: "suppliers",
+            localField: "purchase.supplier",
+            foreignField: "_id",
+            as: "supplier",
+          },
+        },
+        { $unwind: { path: "$supplier", preserveNullAndEmptyArrays: true } },
+        { $sort: { "_id": -1 } } // Sort by batch number desc (usually date based)
+      ]);
+    }
+
+    // ---------------------------------------------------
+    // 7. FINAL STRUCTURED RESPONSE
     // ---------------------------------------------------
     res.json({
       item: {
@@ -1740,17 +1878,19 @@ exports.getItemStockOverview = async (req, res) => {
           serialized.length +
           nonSerialized.reduce((acc, b) => acc + b.availableQty, 0),
       },
-     inStock: item.serialized 
-  ? serialized
-      .filter(x => x.status === "Available")
-      .sort((a, b) => new Date(b.purchaseDate) - new Date(a.purchaseDate))
-  : nonSerialized
-      .filter(x => x.availableQty > 0)
-      .sort((a, b) => new Date(b.purchaseDate) - new Date(a.purchaseDate)),
-     
+      inStock: item.serialized
+        ? serialized
+          .filter(x => x.status === "Available")
+          .sort((a, b) => new Date(b.purchaseDate) - new Date(a.purchaseDate))
+        : nonSerialized
+          .filter(x => x.availableQty > 0)
+          .sort((a, b) => new Date(b.purchaseDate) - new Date(a.purchaseDate)),
+
       variants,
       nonSerializedBatches: nonSerialized,
       serializedItems: serialized,
+      serializedBatches, // NEW
+      salesHistory,      // NEW
       imeiTotal,
       ledger,
       ledgerTotal,
@@ -1760,4 +1900,471 @@ exports.getItemStockOverview = async (req, res) => {
   }
 };
 
-   
+exports.adjustStock = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const { itemId, adjustmentType, adjustmentQty, reason, targetSerialNumbers, newSerialNumbers } = req.body;
+    // adjustmentQty is treated as absolute count for NonSerialized (or difference?)
+    // Modal UI sends "Qty" as "Difference" (Action Qty).
+    // targetSerialNumbers: ["SN1", "SN2"] (for Deduct)
+    // newSerialNumbers: [{ serialNumber: "SN3", unitCost: 100, sellingPrice: 150 }] (for Add)
+
+    const item = await Items.findById(itemId).session(session);
+    if (!item) throw new Error("Item not found");
+
+    if (item.serialized) {
+      if (adjustmentType === "Deduct") {
+        if (!targetSerialNumbers || targetSerialNumbers.length === 0) {
+          throw new Error("Serialized items require specific serial numbers to deduct.");
+        }
+
+        // Update Status of these serials
+        const updateResult = await SerializedStock.updateMany(
+          { serialNumber: { $in: targetSerialNumbers }, item_id: itemId, status: "Available" },
+          { $set: { status: reason, notes: `Adjustment: ${reason}`, sold_date: new Date() } }, // Marking sold_date as well? No, maybe just status.
+          { session }
+        );
+
+        if (updateResult.modifiedCount !== targetSerialNumbers.length) {
+          throw new Error(`Could not find all specified serials in 'Available' status. Updated ${updateResult.modifiedCount} of ${targetSerialNumbers.length}.`);
+        }
+
+        // Log Ledger for each
+        for (const sn of targetSerialNumbers) {
+          const previousLedger = await StockLedger.findOne({ item_id: itemId })
+            .sort({ createdAt: -1 })
+            .session(session)
+            .lean();
+
+          await StockLedger.create([{
+            item_id: itemId,
+            movementType: "Adjustment-Out",
+            qty: -1,
+            serialNumber: sn,
+            memo: `Adjustment: ${reason}`,
+            opening_balance: previousLedger?.closing_balance || 0,
+            closing_balance: (previousLedger?.closing_balance || 0) - 1,
+          }], { session });
+        }
+
+      } else { // Add (Correction/Found)
+        // Check if we are just adding "count" (not allowed for serialized)
+        // Logic: User must provide serials.
+        if (newSerialNumbers && newSerialNumbers.length > 0) {
+          for (const entry of newSerialNumbers) {
+            // Check if exists
+            const exists = await SerializedStock.findOne({ serialNumber: entry.serialNumber, item_id: itemId }).session(session);
+            if (exists) {
+              if (exists.status !== 'Available') {
+                // Reactivate
+                exists.status = 'Available';
+                exists.notes = `Stock Correction: ${reason}`;
+                await exists.save({ session });
+              } else {
+                throw new Error(`Serial ${entry.serialNumber} is already Available.`);
+              }
+            } else {
+              // Create New
+              await SerializedStock.create([{
+                item_id: itemId,
+                variant_id: entry.variant_id || null,
+                serialNumber: entry.serialNumber,
+                batch_number: "ADJ-" + moment().format("YYMMDD"),
+                status: "Available",
+                unitCost: entry.unitCost || item.lastUnitCost || 0,
+                sellingPrice: entry.sellingPrice || item.pricing?.sellingPrice || 0,
+                purchaseDate: new Date(),
+                purchase_id: new mongoose.Types.ObjectId(), // Placeholder for Adjustment
+                condition: "Brand New"
+              }], { session });
+            }
+
+            const previousLedger = await StockLedger.findOne({ item_id: itemId })
+              .sort({ createdAt: -1 })
+              .session(session)
+              .lean();
+
+            await StockLedger.create([{
+              item_id: itemId,
+              movementType: "Adjustment-In",
+              qty: 1,
+              serialNumber: entry.serialNumber,
+              memo: `Adjustment: ${reason}`,
+              opening_balance: previousLedger?.closing_balance || 0,
+              closing_balance: (previousLedger?.closing_balance || 0) + 1,
+            }], { session });
+          }
+        } else {
+          // Fallback: If user didn't provide serials but provided Qty, throw error
+          throw new Error("Cannot add serialized stock without specific Serial Numbers.");
+        }
+      }
+    } else {
+      // Non-Serialized
+      const qty = parseInt(adjustmentQty);
+      if (adjustmentType === "Deduct") {
+        // FIFO Deduct
+        let remaining = qty;
+        const batches = await NonSerializedStock.find({ item_id: itemId, availableQty: { $gt: 0 } }).sort({ purchaseDate: 1 }).session(session);
+
+        for (const batch of batches) {
+          if (remaining <= 0) break;
+          const deduct = Math.min(batch.availableQty, remaining);
+          batch.availableQty -= deduct;
+          batch.adjustmentQty += deduct;
+          batch.adjustment_reason = reason;
+          await batch.save({ session });
+          remaining -= deduct;
+        }
+
+        if (remaining > 0) {
+          throw new Error("Insufficient stock for deduction.");
+        }
+
+        const previousLedger = await StockLedger.findOne({ item_id: itemId })
+          .sort({ createdAt: -1 })
+          .session(session)
+          .lean();
+
+        await StockLedger.create([{
+          item_id: itemId,
+          movementType: "Adjustment-Out",
+          qty: -qty,
+          memo: `Adjustment: ${reason}`,
+          opening_balance: previousLedger?.closing_balance || 0,
+          closing_balance: (previousLedger?.closing_balance || 0) - qty,
+        }], { session });
+
+      } else {
+        // Add
+        await NonSerializedStock.create([{
+          item_id: itemId,
+          batch_number: "ADJ-" + moment().format("YYMMDD"),
+          purchase_qty: qty,
+          availableQty: qty,
+          unitCost: item.lastUnitCost || 0,
+          sellingPrice: item.pricing?.sellingPrice || 0,
+          purchaseDate: new Date(),
+          purchase_id: new mongoose.Types.ObjectId(),
+        }], { session });
+
+        const previousLedger = await StockLedger.findOne({ item_id: itemId })
+          .sort({ createdAt: -1 })
+          .session(session)
+          .lean();
+
+        await StockLedger.create([{
+          item_id: itemId,
+          movementType: "Adjustment-In",
+          qty: qty,
+          memo: `Adjustment: ${reason}`,
+          opening_balance: previousLedger?.closing_balance || 0,
+          closing_balance: (previousLedger?.closing_balance || 0) + qty,
+        }], { session });
+      }
+    }
+
+    await session.commitTransaction();
+    res.json({ message: "Stock adjusted successfully" });
+  } catch (error) {
+    await session.abortTransaction();
+    console.error("Stock Adjustment Error:", error);
+    res.status(500).json({ message: error.message });
+  } finally {
+    session.endSession();
+  }
+};
+
+
+exports.getItemSalesHistory = async (req, res) => {
+  try {
+    const { itemId } = req.params;
+    const { variantId, limit = 10, page = 1 } = req.query;
+
+    if (!mongoose.Types.ObjectId.isValid(itemId)) {
+      return res.status(400).json({ message: "Invalid itemId format" });
+    }
+
+    const matchQuery = {
+      "items.item_id": new mongoose.Types.ObjectId(itemId),
+      transaction_type: "Sale"
+    };
+
+    const sales = await SalesInvoice.aggregate([
+      { $unwind: "$items" },
+      { $match: matchQuery },
+      {
+        $lookup: {
+          from: "customers",
+          localField: "customer",
+          foreignField: "_id",
+          as: "customerInfo"
+        }
+      },
+      { $unwind: { path: "$customerInfo", preserveNullAndEmptyArrays: true } },
+      {
+        $project: {
+          invoice_id: 1,
+          invoice_date: 1,
+          customer_name: {
+            $concat: [
+              { $ifNull: ["$customerInfo.first_name", ""] },
+              " ",
+              { $ifNull: ["$customerInfo.last_name", ""] }
+            ]
+          },
+          quantity: "$items.quantity",
+          price: "$items.price",
+          totalPrice: "$items.totalPrice",
+          batch_number: "$items.batch_number",
+          serialNumbers: "$items.serialNumbers",
+          isSerialized: "$items.isSerialized"
+        }
+      },
+      { $sort: { invoice_date: -1 } },
+      { $skip: (parseInt(page) - 1) * parseInt(limit) },
+      { $limit: parseInt(limit) }
+    ]);
+
+    const totalCount = await SalesInvoice.countDocuments(matchQuery);
+
+    return res.status(200).json({
+      sales,
+      totalCount,
+      page: parseInt(page),
+      limit: parseInt(limit)
+    });
+  } catch (error) {
+    console.error("Error fetching sales history:", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.getStockMovementDashboardData = async (req, res) => {
+  try {
+    const todayStart = moment().startOf('day').toDate();
+    const monthStart = moment().startOf('month').toDate();
+    const yearStart = moment().startOf('year').toDate();
+
+    // 1. INCOMING (Purchases - Received)
+    const incomingMatch = { purchase_status: "Received" };
+    const incomingAgg = await Purchase.aggregate([
+      { $match: incomingMatch },
+      {
+        $facet: {
+          today: [
+            { $match: { purchaseDate: { $gte: todayStart } } },
+            { $group: { _id: null, count: { $sum: "$total_items_count" }, value: { $sum: "$grand_total" } } }
+          ],
+          thisMonth: [
+            { $match: { purchaseDate: { $gte: monthStart } } },
+            { $group: { _id: null, count: { $sum: "$total_items_count" }, value: { $sum: "$grand_total" } } }
+          ],
+          thisYear: [
+            { $match: { purchaseDate: { $gte: yearStart } } },
+            { $group: { _id: null, count: { $sum: "$total_items_count" }, value: { $sum: "$grand_total" } } }
+          ],
+          allTime: [
+            { $group: { _id: null, count: { $sum: "$total_items_count" }, value: { $sum: "$grand_total" } } }
+          ],
+          trends: [
+            { $match: { purchaseDate: { $gte: moment().subtract(6, 'months').startOf('month').toDate() } } },
+            {
+              $group: {
+                _id: { month: { $month: "$purchaseDate" }, year: { $year: "$purchaseDate" } },
+                count: { $sum: "$total_items_count" },
+                value: { $sum: "$grand_total" },
+                date: { $first: "$purchaseDate" }
+              }
+            },
+            { $sort: { "_id.year": 1, "_id.month": 1 } }
+          ]
+        }
+      }
+    ]);
+
+    // 2. OUTGOING (Sales)
+    const outgoingAgg = await SalesInvoice.aggregate([
+      {
+        $facet: {
+          today: [
+            { $match: { invoice_date: { $gte: todayStart } } },
+            { $unwind: "$items" },
+            { $group: { _id: null, count: { $sum: "$items.quantity" }, value: { $sum: "$items.totalPrice" } } }
+          ],
+          thisMonth: [
+            { $match: { invoice_date: { $gte: monthStart } } },
+            { $unwind: "$items" },
+            { $group: { _id: null, count: { $sum: "$items.quantity" }, value: { $sum: "$items.totalPrice" } } }
+          ],
+          thisYear: [
+            { $match: { invoice_date: { $gte: yearStart } } },
+            { $unwind: "$items" },
+            { $group: { _id: null, count: { $sum: "$items.quantity" }, value: { $sum: "$items.totalPrice" } } }
+          ],
+          allTime: [
+            { $unwind: "$items" },
+            { $group: { _id: null, count: { $sum: "$items.quantity" }, value: { $sum: "$items.totalPrice" } } }
+          ],
+          trends: [
+            { $match: { invoice_date: { $gte: moment().subtract(6, 'months').startOf('month').toDate() } } },
+            { $unwind: "$items" },
+            {
+              $group: {
+                _id: { month: { $month: "$invoice_date" }, year: { $year: "$invoice_date" } },
+                count: { $sum: "$items.quantity" },
+                value: { $sum: "$items.totalPrice" },
+                date: { $first: "$invoice_date" }
+              }
+            },
+            { $sort: { "_id.year": 1, "_id.month": 1 } }
+          ]
+        }
+      }
+    ]);
+
+    // 3. PIPELINE (Pending Verification)
+    const pipeline = await Purchase.aggregate([
+      { $match: { purchase_status: "Pending Verification" } },
+      { $group: { _id: null, count: { $sum: "$total_items_count" }, value: { $sum: "$grand_total" }, items: { $sum: 1 } } }
+    ]);
+
+    res.json({
+      incoming: incomingAgg[0],
+      outgoing: outgoingAgg[0],
+      pipeline: pipeline[0] || { count: 0, value: 0, items: 0 }
+    });
+
+  } catch (error) {
+    console.error("Dashboard Data Error:", error);
+    res.status(500).json({ message: "Error fetching dashboard data" });
+  }
+};
+
+exports.backfillLedger = async (req, res) => {
+  try {
+    const items = await Item.find().lean();
+    let totalCreated = 0;
+
+    for (const item of items) {
+      // 1. Get all movements for this item
+      // Purchases (Received/Discrepancy)
+      const purchases = await Purchase.find({
+        "purchasedItems.item_id": item._id,
+        purchase_status: { $in: ["Received", "Discrepancy"] }
+      }).lean();
+
+      // Sales
+      const sales = await SalesInvoice.find({
+        "items.item_id": item._id,
+        transaction_type: "Sale"
+      }).lean();
+
+      // 2. Prepare chronological events
+      const events = [];
+
+      purchases.forEach(p => {
+        const pItem = p.purchasedItems.find(i => String(i.item_id) === String(item._id));
+        if (pItem) {
+          events.push({
+            date: p.verification_date || p.purchaseDate || p.createdAt,
+            type: "Purchase-In",
+            qty: pItem.purchaseQty || (pItem.serializedItems?.length || 0),
+            purchase_id: p._id,
+            batch_number: pItem.batch_number,
+            unitCost: pItem.unitCost,
+            sellingPrice: pItem.sellingPrice,
+            memo: `Backfill: Purchase ${p.referenceNumber}`,
+            serializedUnits: pItem.isSerialized ? pItem.serializedItems : []
+          });
+        }
+      });
+
+      sales.forEach(s => {
+        const sItems = s.items.filter(i => String(i.item_id) === String(item._id));
+        sItems.forEach(si => {
+          events.push({
+            date: s.invoice_date || s.createdAt,
+            type: "Sale-Out",
+            qty: -si.quantity,
+            memo: `Backfill: Sale ${s.invoice_number}`,
+            serialNumbers: si.serialNumbers || []
+          });
+        });
+      });
+
+      // Sort by date ASC
+      events.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+      // 3. Reconstruct Ledger (WIPE existing for clean slate during maintenance)
+      await StockLedger.deleteMany({ item_id: item._id });
+      let balance = 0;
+
+      for (const ev of events) {
+        if (ev.serializedUnits && ev.serializedUnits.length > 0) {
+          // Serialized Purchase-In
+          for (const unit of ev.serializedUnits) {
+            const entry = {
+              item_id: item._id,
+              variant_id: unit.variant_id || null,
+              purchase_id: ev.purchase_id,
+              serialNumber: unit.serialNumber,
+              movementType: ev.type,
+              qty: 1,
+              opening_balance: balance,
+              closing_balance: balance + 1,
+              batch_number: ev.batch_number,
+              unitCost: unit.unitCost,
+              sellingPrice: unit.sellingPrice,
+              memo: ev.memo,
+              createdAt: ev.date
+            };
+            await StockLedger.create(entry);
+            balance += 1;
+            totalCreated++;
+          }
+        } else if (ev.serialNumbers && ev.serialNumbers.length > 0) {
+          // Serialized Sale-Out
+          for (const sn of ev.serialNumbers) {
+            const entry = {
+              item_id: item._id,
+              movementType: ev.type,
+              qty: -1,
+              serialNumber: sn,
+              opening_balance: balance,
+              closing_balance: balance - 1,
+              memo: ev.memo,
+              createdAt: ev.date
+            };
+            await StockLedger.create(entry);
+            balance -= 1;
+            totalCreated++;
+          }
+        } else {
+          // Non-Serialized
+          const entry = {
+            item_id: item._id,
+            movementType: ev.type,
+            qty: ev.qty,
+            opening_balance: balance,
+            closing_balance: balance + ev.qty,
+            batch_number: ev.batch_number,
+            unitCost: ev.unitCost,
+            sellingPrice: ev.sellingPrice,
+            memo: ev.memo,
+            createdAt: ev.date
+          };
+          await StockLedger.create(entry);
+          balance += ev.qty;
+          totalCreated++;
+        }
+      }
+    }
+
+    res.json({ message: "Backfill completed", totalCreated });
+  } catch (error) {
+    console.error("Backfill Error:", error);
+    res.status(500).json({ message: error.message });
+  }
+};

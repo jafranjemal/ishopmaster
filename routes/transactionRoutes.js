@@ -5,6 +5,9 @@ const transactionController = require("../controllers/transactionController");
 // Create a new transaction (deposit/withdrawal)
 router.post("/", transactionController.createTransaction);
 
+// Get all transactions
+router.get("/", transactionController.getAllTransactions);
+
 // Get all transactions for a specific account
 router.get("/account/:account_id", transactionController.getTransactionsByAccount);
 

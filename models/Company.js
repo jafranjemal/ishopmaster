@@ -4,7 +4,7 @@ const companySchema = new mongoose.Schema({
   company_name: { type: String, required: true },
   company_type: { 
     type: String, 
-    enum: ["LLC", "Sole Proprietorship", "Corporation", "Partnership", "Other"], 
+    enum: ["LLC", "Sole Proprietorship", "Corporation", "Partnership", "Other","Retail"], 
     required: true 
   },
   contact_person: { type: String, required: true },

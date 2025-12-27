@@ -64,7 +64,7 @@ const serviceItemSchema = new Schema(
           type: Number,
           required: false, // Labor charge specific to this model
         },
-        
+
         associatedParts: [
           {
             partId: {
@@ -98,13 +98,45 @@ const serviceItemSchema = new Schema(
       enum: ["Active", "Inactive"],
       default: "Active", // Status of the service
     },
+
+    // START TOON ENHANCEMENTS (SERVICE_ITEM_MASTER)
+    internalConfig: {
+      serviceType: {
+        type: String,
+        enum: ["hardware_repair", "software_service", "diagnostic", "cleaning"],
+        default: "hardware_repair"
+      },
+      requiresParts: { type: Boolean, default: true },
+      requiresTechnician: { type: Boolean, default: true },
+      skillLevel: {
+        type: String,
+        enum: ["beginner", "intermediate", "advanced", "expert"],
+        default: "intermediate"
+      },
+      estimatedTime: { type: Number }, // minutes
+
+      workflow: {
+        steps: [{ type: String }],
+        qualityChecks: [{ type: String }],
+        photosRequired: { type: Boolean, default: true }
+      }
+    },
+
+    customerFacing: {
+      displayName: { type: String },
+      description: { type: String },
+      includes: [{ type: String }],
+      excludes: [{ type: String }],
+      warrantyMonths: { type: Number, default: 3 }
+    }
+    // END TOON ENHANCEMENTS
   },
   {
     timestamps: true, // Automatically adds createdAt and updatedAt timestamps
   }
 );
 
-serviceItemSchema.virtual('priceRange').get(function() {
+serviceItemSchema.virtual('priceRange').get(function () {
   if (!this.modelVariants || this.modelVariants.length === 0) {
     return 'N/A';
   }

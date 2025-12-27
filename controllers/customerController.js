@@ -1,5 +1,6 @@
 const Customer = require("../models/Customer");
 const Account = require("../models/Account");
+const mongoose = require("mongoose");
 
 // Create a new customer and associated account
 exports.createCustomer = async (req, res) => {
@@ -22,9 +23,9 @@ exports.createCustomer = async (req, res) => {
     await newCustomer.save();
 
     // Automatically create a customer's account
-    const account_name = `${first_name}'s Account (${newCustomer.customer_id})`; // Custom account name
-    const account_type = "Customer"; 
-    const balance = 0; // Default balance
+    const account_name = `${first_name}'s Account (${newCustomer.customer_id})`;
+    const account_type = "Customer";
+    const balance = 0;
     const account_owner_type = "Customer";
     const related_party_id = newCustomer._id;
 
@@ -34,60 +35,119 @@ exports.createCustomer = async (req, res) => {
       balance,
       account_owner_type,
       related_party_id,
-      description: `Created a new customer account for ${first_name} ${last_name}. This account is classified as a Customer type, registered under ID ${related_party_id}. The initial balance is set to ${balance} to track all transactions and dues effectively.`,
+      description: `Default account for ${first_name} ${last_name}.`,
     });
 
     await newAccount.save();
 
     res.status(201).json({
-      message: "Customer and associated account created successfully!",
+      message: "Customer created successfully",
       customer: newCustomer,
-      account: newAccount,
     });
   } catch (error) {
-    console.error("Error creating customer and account:", error);
-    res.status(500).json({ message: "Internal server error", error });
+    console.error("Error creating customer:", error);
+    res.status(500).json({ message: "Internal server error", error: error.message });
   }
 };
 
-// Get all customers
+// Get all customers (legacy support)
 exports.getAllCustomers = async (req, res) => {
   try {
-    const customers = await Customer.find();
+    const customers = await Customer.find().sort({ created_at: -1 });
     res.status(200).json(customers);
   } catch (error) {
-    console.error("Error fetching customers:", error);
-    res.status(500).json({ message: "Internal server error", error });
+    res.status(500).json({ message: "Internal server error" });
   }
 };
 
 /**
- * Retrieves all customers and their associated accounts.
- *
- * @param {Object} req - The incoming request object.
- * @param {Object} res - The outgoing response object.
+ * Retrieves paginated customers with their associated accounts.
  */
+
 exports.getCustomersAndAccounts = async (req, res) => {
   try {
-    // Fetch all customers
-    const customers = await Customer.find();
+    const search = req.query.search || "";
+    const page = search ? 1 : Math.max(1, parseInt(req.query.page) || 1); // Reset to page 1 on search
+    const limit = Math.max(1, parseInt(req.query.limit) || 10);
+    const skip = (page - 1) * limit;
+    const sortBy = req.query.sortBy || "created_at";
+    const sortOrder = req.query.sortOrder === "asc" ? 1 : -1;
 
-    // Fetch all accounts for each customer
-    const customersWithAccounts = await Promise.all(customers.map(async (customer) => {
-      const accounts = await Account.findOne({
-        account_owner_type: "Customer",
-        related_party_id: customer._id,
-      });
+    // 1. Build Match Stage with Sanitized Regex
+    const matchStage = {};
+    if (search) {
+      const safeSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // Sanitize regex
+      const searchRegex = { $regex: safeSearch, $options: "i" };
+      matchStage.$or = [
+        { first_name: searchRegex },
+        { last_name: searchRegex },
+        { customer_id: searchRegex },
+        { phone_number: searchRegex },
+        { company_name: searchRegex }
+      ];
+    }
 
-      return { ...customer.toObject(), accounts };
-    }));
+    // 2. Define the Pipeline
+    const pipeline = [
+      { $match: matchStage },
+      // Sort before facet for pagination accuracy
+      { $sort: { [sortBy]: sortOrder } },
+      {
+        $lookup: {
+          from: "accounts", // Must be the actual collection name in MongoDB
+          let: { custId: "$_id" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ["$related_party_id", "$$custId"] },
+                    { $eq: ["$account_owner_type", "Customer"] }
+                  ]
+                }
+              }
+            },
+            { $limit: 1 }
+          ],
+          as: "account"
+        }
+      },
+      {
+        $addFields: {
+          account: { $arrayElemAt: ["$account", 0] }
+        }
+      },
+      {
+        $facet: {
+          metadata: [{ $count: "total" }],
+          data: [{ $skip: skip }, { $limit: limit }]
+        }
+      }
+    ];
 
-    // Return the customers and their accounts
-    res.status(200).json(customersWithAccounts);
+    // 3. Execute with allowDiskUse to avoid 500 Memory Limit Errors
+    const result = await Customer.aggregate(pipeline).allowDiskUse(true);
+
+    const facetResult = result[0] || { metadata: [], data: [] };
+    const total = facetResult.metadata[0]?.total || 0;
+    const data = facetResult.data || [];
+
+    return res.status(200).json({
+      success: true,
+      data,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
+    });
+
   } catch (error) {
-    // Log the error and return a generic error message
-    console.error("Error fetching customers and accounts:", error);
-    res.status(500).json({ message: "Internal server error" });
+    console.error("Aggregation Error Details:", error);
+    return res.status(500).json({
+      success: false,
+      message: "An internal error occurred during data retrieval.",
+      error: error.message // Hide stack in production for security
+    });
   }
 };
 
@@ -101,41 +161,33 @@ exports.getCustomerById = async (req, res) => {
       return res.status(404).json({ message: "Customer not found" });
     }
 
-    // Fetch the customer's account(s)
-    const accounts = await Account.find({
+    const account = await Account.findOne({
       account_owner_type: "Customer",
       related_party_id: id,
     });
 
-    res.status(200).json({ customer, accounts });
+    res.status(200).json({ customer, account });
   } catch (error) {
-    console.error("Error fetching customer:", error);
-    res.status(500).json({ message: "Internal server error", error });
+    res.status(500).json({ message: "Internal server error" });
   }
 };
-
 
 // Update a customer
 exports.updateCustomer = async (req, res) => {
   try {
     const { id } = req.params;
-    const updateData = req.body;
-
-    const updatedCustomer = await Customer.findByIdAndUpdate(id, updateData, {
-      new: true,
-    });
+    const updatedCustomer = await Customer.findByIdAndUpdate(id, req.body, { new: true });
 
     if (!updatedCustomer) {
       return res.status(404).json({ message: "Customer not found" });
     }
 
     res.status(200).json({
-      message: "Customer updated successfully!",
+      message: "Customer updated successfully",
       customer: updatedCustomer,
     });
   } catch (error) {
-    console.error("Error updating customer:", error);
-    res.status(500).json({ message: "Internal server error", error });
+    res.status(500).json({ message: "Internal server error" });
   }
 };
 
@@ -143,22 +195,19 @@ exports.updateCustomer = async (req, res) => {
 exports.deleteCustomer = async (req, res) => {
   try {
     const { id } = req.params;
-
     const customer = await Customer.findByIdAndDelete(id);
 
     if (!customer) {
       return res.status(404).json({ message: "Customer not found" });
     }
 
-    // Delete associated accounts
     await Account.deleteMany({
       account_owner_type: "Customer",
       related_party_id: id,
     });
 
-    res.status(200).json({ message: "Customer and associated accounts deleted successfully!" });
+    res.status(200).json({ message: "Customer deleted successfully" });
   } catch (error) {
-    console.error("Error deleting customer:", error);
-    res.status(500).json({ message: "Internal server error", error });
+    res.status(500).json({ message: "Internal server error" });
   }
 };

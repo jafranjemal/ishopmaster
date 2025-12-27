@@ -17,6 +17,9 @@ router.put('/:id', salesInvoiceController.updateSalesInvoice);
 // Process payment for a sales invoice
 router.post('/:id/pay', salesInvoiceController.processPayment);
 
+// Professional return flow
+router.post('/:id/return', salesInvoiceController.processReturn);
+
 router.delete('/:id', salesInvoiceController.deleteInvoice);
 
 module.exports = router;

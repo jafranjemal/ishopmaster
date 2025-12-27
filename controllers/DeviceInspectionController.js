@@ -1,63 +1,95 @@
 const DeviceInspection = require('../models/DeviceInspection');
 
 class DeviceInspectionController {
+
   // Create a new device inspection
-  static async createDeviceInspection(req, res) {
+  static async createInspection(req, res) {
     try {
-      const newInspection = new DeviceInspection(req.body);
+      const inspectionData = req.body;
+      const newInspection = new DeviceInspection(inspectionData);
       await newInspection.save();
       res.status(201).json(newInspection);
     } catch (error) {
-      res.status(500).json({ message: error.message });
+      console.error("Create Inspection Error:", error);
+      res.status(500).json({ message: "Failed to create inspection", error: error.message });
     }
   }
 
-  // Get all device inspections
-  static async getAllDeviceInspections(req, res) {
+  // Get inspection by ID
+  static async getInspectionById(req, res) {
     try {
-      const inspections = await DeviceInspection.find().populate('deviceID inspectedBy');
-      res.status(200).json(inspections);
-    } catch (error) {
-      res.status(500).json({ message: error.message });
-    }
-  }
+      const { id } = req.params;
+      const inspection = await DeviceInspection.findById(id)
+        .populate('deviceId')
+        .populate('customerId')
+        .populate('assessment.inspectedBy');
 
-  // Get a device inspection by ID
-  static async getDeviceInspectionById(req, res) {
-    try {
-      const inspection = await DeviceInspection.findById(req.params.id).populate('deviceID inspectedBy');
       if (!inspection) {
-        return res.status(404).json({ message: 'Device inspection not found' });
+        return res.status(404).json({ message: "Inspection not found" });
       }
       res.status(200).json(inspection);
     } catch (error) {
-      res.status(500).json({ message: error.message });
+      res.status(500).json({ message: "Error fetching inspection", error: error.message });
     }
   }
 
-  // Update a device inspection by ID
-  static async updateDeviceInspection(req, res) {
+  // Get inspections by Customer ID
+  static async getInspectionsByCustomer(req, res) {
     try {
-      const updatedInspection = await DeviceInspection.findByIdAndUpdate(req.params.id, req.body, { new: true });
+      const { customerId } = req.params;
+      const inspections = await DeviceInspection.find({ customerId })
+        .sort({ createdAt: -1 });
+      res.status(200).json(inspections);
+    } catch (error) {
+      res.status(500).json({ message: "Error fetching customer inspections", error: error.message });
+    }
+  }
+
+  // Get ALL inspections (for Dashboard)
+  static async getAllInspections(req, res) {
+    try {
+      const inspections = await DeviceInspection.find()
+        .populate('deviceId', 'serialNumber type brandId modelId')
+        .populate('customerId', 'first_name last_name phone_number')
+        .sort({ createdAt: -1 });
+      res.status(200).json(inspections);
+    } catch (error) {
+      console.error("Get All Inspections Error:", error);
+      res.status(500).json({ message: "Error fetching inspections", error: error.message });
+    }
+  }
+
+  // Update inspection
+  static async updateInspection(req, res) {
+    try {
+      const { id } = req.params;
+      const updateData = req.body;
+      const updatedInspection = await DeviceInspection.findByIdAndUpdate(id, updateData, { new: true })
+        .populate('deviceId')
+        .populate('customerId');
+
       if (!updatedInspection) {
-        return res.status(404).json({ message: 'Device inspection not found' });
+        return res.status(404).json({ message: "Inspection not found" });
       }
       res.status(200).json(updatedInspection);
     } catch (error) {
-      res.status(500).json({ message: error.message });
+      console.error("Update Inspection Error:", error);
+      res.status(500).json({ message: "Error updating inspection", error: error.message });
     }
   }
 
-  // Delete a device inspection by ID
-  static async deleteDeviceInspection(req, res) {
+  // Delete inspection
+  static async deleteInspection(req, res) {
     try {
-      const deletedInspection = await DeviceInspection.findByIdAndDelete(req.params.id);
+      const { id } = req.params;
+      const deletedInspection = await DeviceInspection.findByIdAndDelete(id);
       if (!deletedInspection) {
-        return res.status(404).json({ message: 'Device inspection not found' });
+        return res.status(404).json({ message: "Inspection not found" });
       }
-      res.status(200).json({ message: 'Device inspection deleted successfully' });
+      res.status(200).json({ message: "Inspection deleted successfully" });
     } catch (error) {
-      res.status(500).json({ message: error.message });
+      console.error("Delete Inspection Error:", error);
+      res.status(500).json({ message: "Error deleting inspection", error: error.message });
     }
   }
 }

@@ -25,6 +25,19 @@ class PermissionService {
     return await Permissions.findOne({ module, isActive: true });
   }
 
+  async getPermissionsByRoleId(roleId) {
+    return await Permissions.find({ roleId, isActive: true });
+  }
+
+  async getPermissionByRole(identifier) {
+    // Check if identifier is a valid ObjectId (Role ID)
+    if (identifier.match(/^[0-9a-fA-F]{24}$/)) {
+      return await this.getPermissionsByRoleId(identifier);
+    }
+    // Fallback: Treat as module name (legacy/generic support)
+    return await Permissions.findOne({ module: identifier, isActive: true });
+  }
+
   async updatePermission(module, data) {
     return await Permissions.findOneAndUpdate(
       { module, isActive: true },
@@ -52,10 +65,10 @@ class PermissionService {
   }
 
   async checkPermission(module, action) {
-    const permission = await Permissions.findOne({ 
-      module, 
+    const permission = await Permissions.findOne({
+      module,
       actions: action,
-      isActive: true 
+      isActive: true
     });
     return !!permission;
   }
@@ -84,7 +97,7 @@ class PermissionService {
       const permissions = permissionsData.map(data => ({
         module: data.module,
         actions: data.actions,
-       // description: data.description,
+        // description: data.description,
         isActive: true
       }));
 
@@ -111,7 +124,7 @@ class PermissionService {
       }));
 
       const result = await Permissions.bulkWrite(bulkOps);
-      
+
       return {
         matched: result.matchedCount,
         modified: result.modifiedCount,
@@ -127,18 +140,18 @@ class PermissionService {
       'customers', 'dashboard', 'employee', 'items',
       'payments', 'pos', 'purchase', 'repair', 'sales',
       'shift', 'stock', 'suppliers', 'transactions', 'settings',
-      'units', 'users', 'barcode','supplier',"customersAccount","supplierAccount","employeeAccount","companyAccount"
+      'units', 'users', 'barcode', 'supplier', "customersAccount", "supplierAccount", "employeeAccount", "companyAccount"
     ];
 
     const validActions = ['view', 'create', 'edit', 'delete', 'export'];
 
     const invalidEntries = data.filter(
-      item => !validModules.includes(item.module) || 
-      !item.actions.every(action => validActions.includes(action))
+      item => !validModules.includes(item.module) ||
+        !item.actions.every(action => validActions.includes(action))
     );
 
     if (invalidEntries.length > 0) {
-      throw new ApiError(400, `Invalid entries found: ${JSON.stringify(invalidEntries.map(x=> x.module))}`);
+      throw new ApiError(400, `Invalid entries found: ${JSON.stringify(invalidEntries.map(x => x.module))}`);
     }
 
     return true;
@@ -154,10 +167,10 @@ class PermissionService {
         roleId
       }));
 
-         // Validate permissions data
-    if (!Array.isArray(permissionsData) || permissionsData.length === 0) {
-      throw new ApiError(400, 'Invalid permissions data');
-    }
+      // Validate permissions data
+      if (!Array.isArray(permissionsData) || permissionsData.length === 0) {
+        throw new ApiError(400, 'Invalid permissions data');
+      }
 
       const role = await Role.findById(roleId);
       if (!role) {
@@ -167,12 +180,12 @@ class PermissionService {
 
       await role.save()
 
-      await Permissions.deleteMany({roleId:roleId})
+      await Permissions.deleteMany({ roleId: roleId })
 
 
 
-      const createdPermissions = await Permissions.insertMany(permissions, { 
-        ordered: false 
+      const createdPermissions = await Permissions.insertMany(permissions, {
+        ordered: false
       });
 
       // Get permission IDs
@@ -181,12 +194,12 @@ class PermissionService {
       // Update role with new permissions
       const updatedRole = await Role.findByIdAndUpdate(
         roleId,
-        { 
-          $addToSet: { 
-            permissions: { 
-              $each: permissionIds 
-            } 
-          } 
+        {
+          $addToSet: {
+            permissions: {
+              $each: permissionIds
+            }
+          }
         },
         { new: true }
       ).populate('permissions');
@@ -208,12 +221,12 @@ class PermissionService {
     try {
       const updatedRole = await Role.findByIdAndUpdate(
         roleId,
-        { 
-          $addToSet: { 
-            permissions: { 
-              $each: permissionIds 
-            } 
-          } 
+        {
+          $addToSet: {
+            permissions: {
+              $each: permissionIds
+            }
+          }
         },
         { new: true }
       ).populate('permissions');
@@ -228,6 +241,6 @@ class PermissionService {
     }
   }
 }
- 
+
 
 module.exports = new PermissionService();

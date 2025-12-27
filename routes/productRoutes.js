@@ -18,5 +18,6 @@ router.put('/:id', editProduct); // edit product
 router.delete('/:id', deleteProduct); // edit product
 router.post('/:id/batches', addBatchToProduct); // Add a batch to a product
 router.get('/:id/profit', calculateProfit); // Calculate profit for a product
+router.get('/:id/analytics', require('../controllers/productController').getItemAnalytics); // Item Intelligence API
 
 module.exports = router;

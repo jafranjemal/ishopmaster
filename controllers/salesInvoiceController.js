@@ -7,6 +7,8 @@ const Payment = require("../models/Payment");
 const Shift = require("../models/Shift");
 const { ApiError } = require("../utility/ApiError");
 const Ticket = require("../models/Ticket");
+const warrantyController = require("./warrantyController");
+const StockLedger = require("../models/StockLedger");
 
 async function updateInventory_old(items) {
   console.log("updateInventory start...");
@@ -87,6 +89,56 @@ async function updateInventory(items) {
             },
           },
         });
+      });
+    }
+
+    // --- LOG LEDGER MOVEMENTS ---
+    for (const item of serializedItems) {
+      // Get current count of available items of this type
+      const currentStockCount = await SerializedStock.countDocuments({
+        item_id: item.item_id,
+        status: "Available"
+      });
+
+      for (let i = 0; i < (item.serialNumbers || []).length; i++) {
+        const sn = item.serialNumbers[i];
+        const opening = currentStockCount - i;
+        const closing = opening - 1;
+
+        await StockLedger.create({
+          item_id: item.item_id,
+          variant_id: item.variant_id || null,
+          movementType: "Sale-Out",
+          qty: -1,
+          opening_balance: opening,
+          closing_balance: closing,
+          serialNumber: sn,
+          memo: `Sale: ${item.itemName}`,
+          createdAt: new Date()
+        });
+      }
+    }
+
+    for (const item of nonSerializedItems) {
+      // Get current available quantity for this specific batch
+      const stockRecord = await NonSerializedStock.findOne({
+        item_id: item.item_id,
+        batch_number: item.batch_number
+      });
+
+      const opening = stockRecord ? stockRecord.availableQty : 0;
+      const closing = opening - item.quantity;
+
+      await StockLedger.create({
+        item_id: item.item_id,
+        variant_id: item.variant_id || null,
+        movementType: "Sale-Out",
+        qty: -item.quantity,
+        opening_balance: opening,
+        closing_balance: closing,
+        batch_number: item.batch_number,
+        memo: `Sale: ${item.itemName} (Batch: ${item.batch_number})`,
+        createdAt: new Date()
       });
     }
 
@@ -345,8 +397,8 @@ async function processPayment(invoiceId, paymentDetails) {
     invoice.total_paid_amount === 0
       ? "Unpaid"
       : invoice.total_amount === invoice.total_paid_amount
-      ? "Paid"
-      : "Partially paid";
+        ? "Paid"
+        : "Partially paid";
   // Update the invoice due amount
   //invoice.total_paid_amount = totalPaid;
   invoice.status = invoiceStatus;
@@ -640,7 +692,9 @@ async function createSalesInvoice(
   notes,
   invoice_type,
   serviceItems,
-  ticketId = null
+  ticketId = null,
+  global_discount_type = "Fixed",
+  global_discount_value = 0
 ) {
   const itemTotal = items.reduce((total, item) => total + item.totalPrice, 0);
   const serviceTotal =
@@ -651,6 +705,56 @@ async function createSalesInvoice(
   );
 
   const totalAmount = itemTotal + serviceTotal;
+  const dueAmount = totalAmount - total_paid_amount;
+
+  // Credit Limit Check
+  if (dueAmount > 0) {
+    const Customer = require("../models/Customer"); // Ensure Customer model is available
+    const customer = await Customer.findById(customerId);
+    const customerAccount = await Account.findOne({
+      related_party_id: customerId,
+      account_owner_type: "Customer",
+    });
+
+    if (customer && customerAccount) {
+      const currentBalance = customerAccount.balance; // Negative means they owe
+      const projectedBalance = currentBalance - dueAmount;
+
+      // Credit Limit Logic:
+      // - null or undefined = UNLIMITED CREDIT (no validation)
+      // - 0 = CASH ONLY (no credit allowed)
+      // - positive number = SPECIFIC LIMIT (debt capped at that amount)
+      const creditLimit = customer.creditLimit;
+
+      if (creditLimit === null || creditLimit === undefined) {
+        // Unlimited credit - no validation needed
+        console.log(`Customer ${customer.first_name} has unlimited credit`);
+      } else if (creditLimit === 0) {
+        // Cash only - no credit allowed
+        throw new ApiError(
+          400,
+          `Cash Only Customer!\n` +
+          `Customer: ${customer.first_name} ${customer.last_name || ""}\n` +
+          `Credit is not allowed for this customer.\n` +
+          `Due Amount: Rs. ${dueAmount.toFixed(2)}`
+        );
+      } else {
+        // Specific credit limit
+        if (projectedBalance < -creditLimit) {
+          throw new ApiError(
+            400,
+            `Credit Limit Exceeded!\n` +
+            `Customer: ${customer.first_name} ${customer.last_name || ""}\n` +
+            `Credit Limit: Rs. ${creditLimit.toFixed(2)}\n` +
+            `Current Balance: Rs. ${Math.abs(currentBalance).toFixed(2)} ${currentBalance < 0 ? 'owed' : 'credit'}\n` +
+            `This Sale: Rs. ${dueAmount.toFixed(2)}\n` +
+            `Projected Debt: Rs. ${Math.abs(projectedBalance).toFixed(2)}`
+          );
+        }
+      }
+    }
+  }
+
   console.log("totalAmount - ", totalAmount);
   console.log("total_paid_amount - ", total_paid_amount);
   // Create the sales invoice
@@ -668,13 +772,27 @@ async function createSalesInvoice(
     invoice_type,
     serviceItems,
     ticketId,
+    global_discount_type,
+    global_discount_value,
   });
 
-  if (invoice_type === "Service") {
+  if (ticketId) {
     const ticket = await Ticket.findById(ticketId);
     if (!ticket) throw Error("Ticket not found");
 
     ticket.invoiceId = invoice._id;
+
+    // Auto-complete ticket on payment generation if it's open
+    if (ticket.ticketStatus !== 'Completed') {
+      ticket.ticketStatus = 'Completed';
+      ticket.repairStatus = 'Completed';
+      ticket.statusHistory.push({
+        status: 'Completed',
+        timestamp: new Date(),
+        updatedBy: userId
+      });
+    }
+
     await ticket.save();
 
     invoice.ticketId = ticket._id;
@@ -691,6 +809,14 @@ async function createSalesInvoice(
 
   // Update Sales shift
   await logSaleInShift(shiftId, invoice.invoice_id, totalAmount);
+
+  // Generate separate warranty records
+  try {
+    await warrantyController.generateWarrantiesForInvoice(invoice._id);
+  } catch (wErr) {
+    console.error("Error generating warranties:", wErr);
+    // We don't fail the whole sale if warranty generation fails, but log it
+  }
 
   const lastInvoice = await SalesInvoice.findOne({
     _id: invoice._id,
@@ -849,7 +975,7 @@ async function settleDuePayment(existingInvoice, updates) {
       // Update invoice status
       existingInvoice.status =
         settlementAmount + existingInvoice.total_paid_amount >=
-        existingInvoice.total_amount
+          existingInvoice.total_amount
           ? "Paid"
           : "Partially paid";
       existingInvoice.total_paid_amount += paymentAmountToApply;
@@ -941,6 +1067,8 @@ exports.createSalesInvoice = async (req, res) => {
     invoice_type = "Sale",
     serviceItems = [],
     ticketId = null,
+    global_discount_type = "Fixed",
+    global_discount_value = 0,
   } = req.body;
 
   try {
@@ -954,7 +1082,9 @@ exports.createSalesInvoice = async (req, res) => {
       notes,
       invoice_type,
       serviceItems,
-      ticketId
+      ticketId,
+      global_discount_type,
+      global_discount_value
     );
     res.status(201).json(invoice);
   } catch (error) {
@@ -974,20 +1104,83 @@ exports.createSalesInvoice = async (req, res) => {
  */
 exports.getAllSalesInvoices = async (req, res) => {
   try {
-    const limit = req.query.limit || 10;
-    const skip = req.query.skip || 0;
-    const sort = req.query.sort || "desc"; // default to descending order
+    const {
+      search,
+      limit = 10,
+      skip = 0,
+      startDate,
+      endDate,
+      customer,
+      status,
+      paymentMethod,
+      minAmount,
+      maxAmount
+    } = req.query;
 
-    const invoices = await SalesInvoice.find()
-      .populate("customer")
-      .populate("ticketId")
-      .populate("ticketId")
-      .populate("items.item_id")
-      .sort({ invoice_date: sort }) // sort by createdAt field
-      //.limit(limit)
-      .skip(skip);
+    let query = {};
 
-    return res.status(200).json(invoices);
+    // Base Query Logic
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) query.createdAt.$lte = new Date(endDate);
+    }
+    if (customer) query.customer = customer;
+    if (status) query.status = status;
+    if (paymentMethod) query.payment_method = paymentMethod;
+    if (minAmount || maxAmount) {
+      query.total_amount = {};
+      if (minAmount) query.total_amount.$gte = Number(minAmount);
+      if (maxAmount) query.total_amount.$lte = Number(maxAmount);
+    }
+
+    const searchRegex = search ? { $regex: search, $options: "i" } : null;
+
+    const pipeline = [
+      { $match: query },
+      {
+        $lookup: {
+          from: "customers",
+          localField: "customer",
+          foreignField: "_id",
+          as: "customer_details",
+        },
+      },
+      { $unwind: { path: "$customer_details", preserveNullAndEmptyArrays: true } },
+    ];
+
+    if (searchRegex) {
+      pipeline.push({
+        $match: {
+          $or: [
+            { invoice_id: searchRegex },
+            { "customer_details.first_name": searchRegex },
+            { "customer_details.last_name": searchRegex },
+            { "customer_details.phone": searchRegex },
+            { "items.barcode": searchRegex },
+            { "items.serialNumbers": searchRegex },
+          ],
+        },
+      });
+    }
+
+    pipeline.push(
+      { $sort: { createdAt: -1 } },
+      { $skip: Number(skip) },
+      { $limit: Number(limit) }
+    );
+
+    const invoices = await SalesInvoice.aggregate(pipeline);
+
+    // Populate remaining refs manually or via another lookup if needed
+    // Note: Aggregate results are plain objects, we might need to populate them for consistency
+    const populatedInvoices = await SalesInvoice.populate(invoices, [
+      { path: "customer" },
+      { path: "ticketId" },
+      { path: "items.item_id" },
+    ]);
+
+    return res.status(200).json(populatedInvoices);
   } catch (error) {
     if (error.name === "ValidationError") {
       return res.status(400).json({ message: error.message });
@@ -1014,6 +1207,41 @@ exports.getSalesInvoiceById = async (req, res) => {
 };
 
 // Update a sales invoice
+
+/**
+ * processReturn:
+ * Handles full return of a sales invoice, restoring stock and reversing finances.
+ */
+exports.processReturn = async (req, res) => {
+  const { id } = req.params;
+  const { notes = "Customer Return" } = req.body;
+
+  try {
+    const invoice = await SalesInvoice.findById(id).populate("customer");
+    if (!invoice) return res.status(404).json({ message: "Invoice not found" });
+
+    if (invoice.status === "Returned" || invoice.status === "Reversed") {
+      return res.status(400).json({ message: `Invoice already ${invoice.status}` });
+    }
+
+    // 1. Process Reversal (Financials + Inventory)
+    await reverseSalesInvoice(id, `Return: ${notes}`);
+
+    // 2. Update Status specifically to "Returned"
+    invoice.status = "Returned";
+    invoice.transaction_type = "Return";
+    invoice.notes = (invoice.notes ? invoice.notes + " | " : "") + `Return Note: ${notes}`;
+    await invoice.save();
+
+    res.status(200).json({
+      message: "Invoice returned successfully. Stock restored and financials reversed.",
+      invoice
+    });
+  } catch (error) {
+    console.error("Error during processReturn:", error);
+    res.status(500).json({ message: "Internal server error", error: error.message });
+  }
+};
 
 // Main sales update function
 exports.updateSalesInvoice = async (req, res) => {
@@ -1127,11 +1355,11 @@ exports.updateSalesInvoice = async (req, res) => {
 
           await processPayment(existingInvoice.invoice_id, payment_methods);
 
- // Return success response
- res.status(200).json({
-  message: "Invoice updated successfully",
-  invoice: existingInvoice,
-});
+          // Return success response
+          res.status(200).json({
+            message: "Invoice updated successfully",
+            invoice: existingInvoice,
+          });
 
           // 5. update invoice status to unpaid if it's paid
         } else {
@@ -1139,33 +1367,33 @@ exports.updateSalesInvoice = async (req, res) => {
           //change entire invoice details and update the new invoice
 
           // Step 3a: Reverse the existing invoice
-        await reverseSalesInvoice(existingInvoice._id, "Updating Sales");
-        console.log("reverseSalesInvoice compledted...\n");
-        console.log("create a new sales invoice started ...\n");
-        const newInvoice = await createReversalSalesInvoice(
-          customer,
-          items,
-          payment_methods,
-          transaction_type,
-          user_id,
-          shift_id,
-          notes || "",
-          req.body.invoice_type,
-          req.body.serviceItems,
-          req.body.ticketId
-        );
-        console.log("create a new sales invoice ended ...\n");
-        console.log("New invoice created:", newInvoice);
- // Return success response
- res.status(200).json({
-  message: "Invoice reversed and re-entered successfully",
-  invoice: newInvoice,
-});
+          await reverseSalesInvoice(existingInvoice._id, "Updating Sales");
+          console.log("reverseSalesInvoice compledted...\n");
+          console.log("create a new sales invoice started ...\n");
+          const newInvoice = await createReversalSalesInvoice(
+            customer,
+            items,
+            payment_methods,
+            transaction_type,
+            user_id,
+            shift_id,
+            notes || "",
+            req.body.invoice_type,
+            req.body.serviceItems,
+            req.body.ticketId
+          );
+          console.log("create a new sales invoice ended ...\n");
+          console.log("New invoice created:", newInvoice);
+          // Return success response
+          res.status(200).json({
+            message: "Invoice reversed and re-entered successfully",
+            invoice: newInvoice,
+          });
 
         }
 
-        
-       
+
+
       } else {
         console.log(
           "No financial changes detected. Directly updating the invoice."
@@ -1296,6 +1524,13 @@ async function reverseSalesInvoice(invoiceId, action) {
     invoice.status = "Reversed";
     invoice.transaction_type = "Reversed";
     await invoice.save();
+
+    // Void linked warranty records
+    try {
+      await warrantyController.voidWarrantiesForInvoice(invoice._id);
+    } catch (wErr) {
+      console.error("Error voiding warranties:", wErr);
+    }
 
     // Remove payment records
     await Payment.deleteMany({ references: { sale: invoiceId } });

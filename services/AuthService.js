@@ -11,48 +11,44 @@ class AuthService {
         throw new ApiError(400, 'Username and password are required');
       }
 
+      // 1. Fetch user with minimal required populations for session
       const user = await User.findOne({ username })
-      .select('+password')
-      .populate({
-        path: 'roles',
-        model: 'Role',
-        populate: {
-          path: 'permissions',
-          model: 'Permissions'
-        }
-      })
-      .populate('employeeId')
-      .populate('directPermissions.permission');
-    
-    console.log('Query:',   user?.employeeId  );
-     
-    
-  
-      if (!user || !user.isActive) {
-        throw new ApiError(401, 'Invalid credentials');
+        .select('+password')
+        .populate({
+          path: 'roles',
+          populate: { path: 'permissions' }
+        })
+        .populate('employeeId')
+        .populate('directPermissions.permission');
+
+      if (!user) {
+        throw new ApiError(401, 'Username not found');
       }
 
-      // Compare password
+      if (!user.isActive) {
+        throw new ApiError(401, 'Account is inactive. Please contact admin.');
+      }
+
+      // 2. Compare password
       const isValidPassword = await user.comparePassword(password);
       if (!isValidPassword) {
-        throw new ApiError(401, 'Invalid credentials');
+        throw new ApiError(401, 'Incorrect password');
       }
 
-      // Update last login
-      user.lastLogin = new Date();
-      await user.save();
+      // 3. Update last login atomically (faster than .save())
+      await User.findByIdAndUpdate(user._id, { $set: { lastLogin: new Date() } });
 
-      // Generate token
+      // 4. Generate token
       const token = jwt.sign(
         { userId: user._id },
         process.env.JWT_SECRET,
         { expiresIn: '24h' }
       );
 
-      // Remove sensitive data
+      // Clean sensitive data
       user.password = undefined;
 
-      console.log('User logged in:', user.username);
+      console.log('User logged in successfully:', user.username);
       return {
         success: true,
         statusCode: 200,
@@ -63,6 +59,7 @@ class AuthService {
       };
 
     } catch (error) {
+      console.error('AuthService Login Error:', error.message);
       throw error;
     }
   }
