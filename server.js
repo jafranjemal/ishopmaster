@@ -79,6 +79,8 @@ const stockLedgerRoutes = require("./routes/stockLedgerRoutes");
 const warrantyRoutes = require("./routes/warrantyRoutes");
 const purchaseReturnRoutes = require("./routes/purchaseReturnRoutes");
 const systemRoutes = require("./routes/systemRoutes");
+const reportRoutes = require("./routes/reportRoutes");
+const itemVariantRoutes = require("./routes/itemVariantRoutes");
 
 app.use('/api/items', productRoutes);
 app.use("/api/suppliers", supplierRoutes);
@@ -115,6 +117,8 @@ app.use("/api/stock-ledger", stockLedgerRoutes);
 app.use("/api/warranties", warrantyRoutes);
 app.use("/api/purchase-returns", purchaseReturnRoutes);
 app.use("/api/system", systemRoutes);
+app.use("/api/reports", reportRoutes);
+app.use("/api/variants", itemVariantRoutes);
 
 app.post('/api/print-barcodes', async (req, res) => {
   const { items } = req.body;

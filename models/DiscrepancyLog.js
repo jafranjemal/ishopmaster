@@ -9,9 +9,9 @@ const DiscrepancyLogSchema = new mongoose.Schema({
     category: { type: String }, // e.g., "Short Shipment", "Cash Mismatch"
     reference_id: { type: mongoose.Schema.Types.ObjectId, required: true }, // e.g., PurchaseID, ShiftID
     field_name: { type: String }, // e.g., "grand_total", "physical_cash"
-    expected_value: { type: mongoose.Schema.Mixed },
-    actual_value: { type: mongoose.Schema.Mixed },
-    delta: { type: mongoose.Schema.Mixed },
+    expected_value: mongoose.Schema.Types.Mixed,
+    actual_value: mongoose.Schema.Types.Mixed,
+    delta: mongoose.Schema.Types.Mixed,
     reason: { type: String, required: true },
     resolved: { type: Boolean, default: false },
     resolved_at: { type: Date },

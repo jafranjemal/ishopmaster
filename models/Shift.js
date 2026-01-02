@@ -5,7 +5,7 @@ const shiftSchema = new mongoose.Schema(
     {
         userId: {
             type: mongoose.Schema.Types.ObjectId,
-            ref: 'User ', // Reference to the User schema
+            ref: 'users', // Reference to the User schema
             required: true
         },
         startCash: {

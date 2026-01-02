@@ -128,5 +128,15 @@ ItemSchema.pre('save', function (next) {
   }
   next();
 });
+
+// Case-insensitive unique index for itemName
+ItemSchema.index(
+  { itemName: 1 },
+  {
+    unique: true,
+    collation: { locale: 'en', strength: 2 }
+  }
+);
+
 const Item = mongoose.model("Item", ItemSchema);
 module.exports = Item

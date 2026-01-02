@@ -1,17 +1,17 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
- 
+const { ApiError } = require('../utility/ApiError');
 
 if (!process.env.JWT_SECRET) {
-    throw new Error('JWT_SECRET is not defined in environment variables');
-  }
-  
+  throw new Error('JWT_SECRET is not defined in environment variables');
+}
+
 const authenticate = async (req, res, next) => {
   try {
     // Get token from header
     const authHeader = req.headers.authorization;
     if (!authHeader?.startsWith('Bearer ')) {
-      throw new Error('Authentication required');
+      throw new ApiError(401, 'Authentication required');
     }
 
     // Extract and verify token
@@ -23,8 +23,12 @@ const authenticate = async (req, res, next) => {
       .select('-password')
       .populate('roles');
 
-    if (!user || !user.isActive) {
-      throw new Error('User not found or inactive');
+    if (!user) {
+      throw new ApiError(404, 'User not found');
+    }
+
+    if (!user.isActive) {
+      throw new ApiError(401, 'User account is inactive');
     }
 
     // Attach user to request
@@ -32,13 +36,13 @@ const authenticate = async (req, res, next) => {
     next();
   } catch (error) {
     if (error.name === 'JsonWebTokenError') {
-      next('Invalid token');
+      next(new ApiError(401, 'Invalid token'));
     } else if (error.name === 'TokenExpiredError') {
-      next('Token expired');
+      next(new ApiError(401, 'Token expired'));
     } else {
       next(error);
     }
   }
 };
 
-module.exports = { authenticate };
+module.exports = { authenticate, protect: authenticate };

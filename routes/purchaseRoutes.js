@@ -1,15 +1,16 @@
 const express = require("express");
 const router = express.Router();
 const purchaseController = require("../controllers/purchaseController");
+const { authenticate } = require("../middleware/auth");
 
-router.post("/", purchaseController.createPurchase);
-router.get("/", purchaseController.getAllPurchases);
-router.get("/search-purchases", purchaseController.searchPurchases);
-router.get("/:id", purchaseController.getPurchaseById);
-router.put("/:purchaseId", purchaseController.updatePurchase);
-router.put("/usp/:purchaseId", purchaseController.updatePurchaseSellingPrice);
-router.delete("/:purchaseId", purchaseController.deletePurchase);
-router.post("/verify/:id", purchaseController.verifyPurchasePhysical);
-router.get('/due-purchases/supplier/:id', purchaseController.getDuePurchaseBySupplierId);
+router.post("/", authenticate, purchaseController.createPurchase);
+router.get("/", authenticate, purchaseController.getAllPurchases);
+router.get("/search-purchases", authenticate, purchaseController.searchPurchases);
+router.get("/:id", authenticate, purchaseController.getPurchaseById);
+router.put("/:purchaseId", authenticate, purchaseController.updatePurchase);
+router.put("/usp/:purchaseId", authenticate, purchaseController.updatePurchaseSellingPrice);
+router.delete("/:purchaseId", authenticate, purchaseController.deletePurchase);
+router.post("/verify/:id", authenticate, purchaseController.verifyPurchasePhysical);
+router.get('/due-purchases/supplier/:id', authenticate, purchaseController.getDuePurchaseBySupplierId);
 
 module.exports = router;

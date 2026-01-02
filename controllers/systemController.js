@@ -206,7 +206,7 @@ exports.getSystemInfo = async (req, res) => {
 
         res.json({
             appName: "iShopMaster",
-            version: process.env.APP_VERSION || '0.1.18', // Fallback to user's version
+            version: process.env.APP_VERSION || '0.1.20', // Fallback to user's version
             company: company.company_name, // Returning just name as per user snippet, or object? User snippet showed string. I'll stick to their structure but provide the object if they need it elsewhere? No, user snippet had structure. I will follow user snippet structure but keep extended company info if needed? User snippet: `company: "JJSOFT GLOBAL"`. I will use `company.company_name`.
 
             // Dynamic License Info

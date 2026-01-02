@@ -35,8 +35,7 @@ const getProducts = async (req, res) => {
         { category: { $regex: search, $options: 'i' } },
         { manufacturer: { $regex: search, $options: 'i' } },
         { modelName: { $regex: search, $options: 'i' } },
-        { barcode: { $regex: search, $options: 'i' } },
-        { itemDescription: { $regex: search, $options: 'i' } }
+        { barcode: { $regex: search, $options: 'i' } }
       ];
     }
 
@@ -199,8 +198,12 @@ const addProduct = async (req, res) => {
     // Validate input data
     validateProductData(productData);
 
-    // Check for duplicate product
-    const existingProduct = await Item.findOne({ itemName: productData.itemName });
+    // Check for duplicate product (case-insensitive)
+    const existingProduct = await Item.findOne({
+      itemName: {
+        $regex: new RegExp(`^${productData.itemName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i')
+      }
+    });
     if (existingProduct) {
       console.log('Product with this name already exists:', existingProduct.itemName);
       return res.status(409).json({ message: 'Product with this name already exists' });

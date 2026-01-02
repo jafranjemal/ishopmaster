@@ -14,20 +14,20 @@ exports.getSerializedStockExist = async (req, res) => {
   try {
     const { serialNumber } = req.params;
 
-  if (!serialNumber) {
-    return res.status(400).json({ error: "Serial number is required" });
-  }
-  console.log("serialNumber ", serialNumber)
-  const serializedStock = await SerializedStock.findOne({ serialNumber: serialNumber });
+    if (!serialNumber) {
+      return res.status(400).json({ error: "Serial number is required" });
+    }
+    console.log("serialNumber ", serialNumber)
+    const serializedStock = await SerializedStock.findOne({ serialNumber: serialNumber });
 
-  if (!serializedStock) {
-    return res.status(404).json({ error: "Serialized stock not found" });
-  }
+    if (!serializedStock) {
+      return res.status(404).json({ error: "Serialized stock not found" });
+    }
 
-  const isSold = serializedStock.status !== "Available";
+    const isSold = serializedStock.status !== "Available";
 
-  res.json( {isSold, status: serializedStock.status});
- 
+    res.json({ isSold, status: serializedStock.status });
+
   } catch (err) {
     res.status(500).json({ message: "Error fetching serialized stock", error: err });
   }
@@ -98,5 +98,24 @@ exports.deleteSerializedStock = async (req, res) => {
     res.status(200).json({ message: "Serialized stock deleted successfully" });
   } catch (err) {
     res.status(500).json({ message: "Error deleting serialized stock", error: err });
+  }
+};
+
+// Get serialized stock by variant ID
+exports.getSerializedStockByVariant = async (req, res) => {
+  try {
+    const { variantId } = req.params;
+    if (!variantId) {
+      return res.status(400).json({ error: "Variant ID is required" });
+    }
+
+    const stocks = await SerializedStock.find({
+      variant_id: variantId,
+      status: 'Available'
+    }).populate('purchase_id', 'purchaseDate referenceNumber');
+
+    res.status(200).json(stocks);
+  } catch (err) {
+    res.status(500).json({ message: "Error fetching variant stock", error: err });
   }
 };

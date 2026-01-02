@@ -103,9 +103,87 @@ exports.closeShift = async (req, res) => {
 
 exports.getShifts = async (req, res) => {
   try {
-    const shifts = await Shift.find();
+    const { status, startDate, endDate, userId } = req.query;
+    let query = {};
+
+    if (status) query.status = status;
+    if (userId) query.userId = userId;
+
+    if (startDate && endDate) {
+      query.startTime = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate)
+      };
+    }
+
+    const shifts = await Shift.find(query)
+      .populate('userId', 'name employeeId') // Get formatted name
+      .sort({ startTime: -1 });
+
     res.status(200).json(shifts);
   } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.forceEndShift = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { notes } = req.body;
+
+    const shift = await Shift.findById(id);
+    if (!shift) return res.status(404).json({ message: "Shift not found" });
+    if (shift.status !== 'active') return res.status(400).json({ message: "Shift is not active" });
+
+    // Admin force close assumes equality or 0 cash if not counted
+    // We set actual = calculated to prevent false discrepancies
+    const calculated = shift.calculatedEndCash;
+
+    shift.actualCash = calculated;
+    shift.mismatch = 0;
+    shift.isClosed = true;
+    shift.status = 'closed';
+    shift.endTime = new Date();
+    shift.notes = notes ? `${notes} (Admin Forced Closure)` : "Admin Forced Closure";
+
+    await shift.save();
+
+    res.status(200).json({ message: "Shift force-closed successfully", shift });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.closeAllActiveShifts = async (req, res) => {
+  try {
+    const { notes } = req.body;
+    const activeShifts = await Shift.find({ status: 'active', isClosed: false });
+
+    if (activeShifts.length === 0) {
+      return res.status(200).json({ message: "No active shifts to close", count: 0 });
+    }
+
+    let closedCount = 0;
+    for (const shift of activeShifts) {
+      shift.endTime = new Date();
+      shift.isClosed = true;
+      shift.status = 'closed';
+      // Auto-balance cash for forced closure
+      shift.calculatedEndCash = (shift.totalCashSales || 0) + shift.startCash + shift.cashAdded - shift.cashRemoved;
+      shift.actualCash = shift.calculatedEndCash;
+      shift.mismatch = 0;
+      shift.notes = (shift.notes || "") + ` [Admin Bulk Closure: ${notes || "Global Deactivate Action"}]`;
+
+      await shift.save();
+      closedCount++;
+    }
+
+    res.status(200).json({
+      message: `Successfully closed ${closedCount} active shifts`,
+      count: closedCount
+    });
+  } catch (error) {
+    console.error("Error in bulk close:", error);
     res.status(500).json({ message: error.message });
   }
 };

@@ -336,6 +336,20 @@ exports.getAllItemsWithStock = async (req, res) => {
         },
       },
       {
+        $lookup: {
+          from: "purchases",
+          localField: "purchase_id",
+          foreignField: "_id",
+          as: "purchaseDetails",
+        },
+      },
+      {
+        $unwind: {
+          path: "$purchaseDetails",
+          preserveNullAndEmptyArrays: true,
+        },
+      },
+      {
         $addFields: {
           serialized: { $ifNull: ["$itemDetails.serialized", false] }, // Default serialized to false if not found
         },
@@ -350,14 +364,20 @@ exports.getAllItemsWithStock = async (req, res) => {
               purchaseDate: "$purchase_date",
               unitCost: "$unit_cost",
               sellingPrice: "$selling_price",
+              purchaseId: "$purchase_id",
+              invoiceNumber: { $ifNull: ["$purchaseDetails.referenceNumber", ""] },
             },
           },
           totalStock: { $sum: "$available_qty" },
           lastUnitCost: { $last: "$unit_cost" },
           lastSellingPrice: { $last: "$selling_price" },
           serialized: { $last: "$serialized" },
+          maxPurchaseDate: { $max: "$purchase_date" },
           itemDetails: { $first: "$itemDetails" },
         },
+      },
+      {
+        $sort: { maxPurchaseDate: -1 }
       },
       {
         $project: {
@@ -369,6 +389,7 @@ exports.getAllItemsWithStock = async (req, res) => {
           serialized: 1,
           batches: 1,
           itemDetails: 1,
+          maxPurchaseDate: 1,
         },
       },
     ]);
@@ -1532,6 +1553,7 @@ exports.getUnifiedStock = async (req, res) => {
               purchase_id: "$batches.purchase_id",
               purchase: "$purchase_info",
               supplier: "$supplier_info",
+              invoiceNumber: { $ifNull: ["$purchase_info.referenceNumber", ""] },
             },
           },
         },
@@ -1904,7 +1926,7 @@ exports.adjustStock = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const { itemId, adjustmentType, adjustmentQty, reason, targetSerialNumbers, newSerialNumbers } = req.body;
+    const { itemId, adjustmentType, adjustmentQty, reason, targetSerialNumbers, newSerialNumbers, unitCost, sellingPrice, supplierId } = req.body;
     // adjustmentQty is treated as absolute count for NonSerialized (or difference?)
     // Modal UI sends "Qty" as "Difference" (Action Qty).
     // targetSerialNumbers: ["SN1", "SN2"] (for Deduct)
@@ -1912,6 +1934,31 @@ exports.adjustStock = async (req, res) => {
 
     const item = await Items.findById(itemId).session(session);
     if (!item) throw new Error("Item not found");
+
+    // Helper: Create Purchase Record if Supplier is provided for "Add"
+    let purchaseId = new mongoose.Types.ObjectId(); // Default placeholder (virtual)
+
+    if (adjustmentType !== "Deduct" && supplierId) {
+      // Create a real Purchase record to link this Stock Adjustment to a Supplier
+      const purchaseEntry = await Purchase.create([{
+        supplier: supplierId,
+        referenceNumber: "ADJ-" + moment().format("YYMMDD-HHmmss"),
+        purchaseDate: new Date(),
+        purchase_status: "Received",
+        verification_status: "Verified", // Auto-verify adjustment
+        total_items_count: adjustmentQty || newSerialNumbers?.length || 0,
+        grand_total: (parseFloat(unitCost) || 0) * (adjustmentQty || newSerialNumbers?.length || 0),
+        purchasedItems: [{ // Minimal item structure
+          item_id: itemId,
+          purchaseQty: adjustmentQty || newSerialNumbers?.length || 1,
+          unitCost: parseFloat(unitCost) || 0,
+          sellingPrice: parseFloat(sellingPrice) || 0,
+          batch_number: "ADJ-" + moment().format("YYMMDD"),
+          isSerialized: item.serialized
+        }]
+      }], { session });
+      purchaseId = purchaseEntry[0]._id;
+    }
 
     if (item.serialized) {
       if (adjustmentType === "Deduct") {
@@ -1972,10 +2019,11 @@ exports.adjustStock = async (req, res) => {
                 serialNumber: entry.serialNumber,
                 batch_number: "ADJ-" + moment().format("YYMMDD"),
                 status: "Available",
-                unitCost: entry.unitCost || item.lastUnitCost || 0,
-                sellingPrice: entry.sellingPrice || item.pricing?.sellingPrice || 0,
+                // PRIORITIZE: Serial Specific > Global Input > Item Last Known
+                unitCost: entry.unitCost || parseFloat(unitCost) || item.lastUnitCost || 0,
+                sellingPrice: entry.sellingPrice || parseFloat(sellingPrice) || item.pricing?.sellingPrice || 0,
                 purchaseDate: new Date(),
-                purchase_id: new mongoose.Types.ObjectId(), // Placeholder for Adjustment
+                purchase_id: purchaseId, // Use the real or placeholder ID
                 condition: "Brand New"
               }], { session });
             }
@@ -2038,15 +2086,24 @@ exports.adjustStock = async (req, res) => {
 
       } else {
         // Add
+        // Update Item Master's Last Cost/Price if provided
+        if (unitCost || sellingPrice) {
+          if (unitCost) item.lastUnitCost = parseFloat(unitCost);
+          // Updating item.pricing might be complex if it's nested, sticking to stock record for now
+          // But usually we want to reflect this in the Item Master for future reference
+          await item.save({ session });
+        }
+
         await NonSerializedStock.create([{
           item_id: itemId,
           batch_number: "ADJ-" + moment().format("YYMMDD"),
           purchase_qty: qty,
           availableQty: qty,
-          unitCost: item.lastUnitCost || 0,
-          sellingPrice: item.pricing?.sellingPrice || 0,
+          // PRIORITIZE: Global Input > Item Last Known
+          unitCost: parseFloat(unitCost) || item.lastUnitCost || 0,
+          sellingPrice: parseFloat(sellingPrice) || item.pricing?.sellingPrice || 0,
           purchaseDate: new Date(),
-          purchase_id: new mongoose.Types.ObjectId(),
+          purchase_id: purchaseId, // Use the real or placeholder ID
         }], { session });
 
         const previousLedger = await StockLedger.findOne({ item_id: itemId })

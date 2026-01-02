@@ -9,7 +9,7 @@ const { ApiError } = require("../utility/ApiError");
 exports.createCompany = async (req, res, next) => {
   try {
     const existingCompany = await Company.countDocuments();
-    
+
     if (existingCompany > 0) {
       throw new ApiError(400, 'Only one company is allowed in the system');
     }
@@ -65,11 +65,11 @@ exports.getCompanyById = async (req, res) => {
 // Update company details
 exports.updateCompany = async (req, res) => {
   try {
-    const { company_name, company_type, contact_person, email, phone_number, address, tax_id, registration_number } = req.body;
+    const updates = req.body;
     const company = await Company.findByIdAndUpdate(
       req.params.id,
-      { company_name, company_type, contact_person, email, phone_number, address, tax_id, registration_number },
-      { new: true }
+      updates,
+      { new: true, runValidators: true }
     );
     if (!company) {
       return res.status(404).json({ message: "Company not found" });
@@ -93,177 +93,176 @@ exports.deleteCompany = async (req, res) => {
   }
 };
 
- 
+
 exports.getCompanyProfile_old = async (req, res) => {
-    try {
-      const { companyId } = req.params;
-      
-      // Fetch the company profile
-      const company = await Company.findById(companyId);
-  
-      if (!company) {
-        return res.status(404).json({ message: "Company not found" });
-      }
-  
-      // Initialize account data
-      let account = null;
-      let transactions = [];
-      let totalRevenueAmount = 0;
-      let totalExpensesAmount = 0;
-  
-      // Fetch related account details only if it exists
-      const checkExistAccount = await Account.findOne({
-        account_owner_type: "Company",
-        related_party_id: companyId,
-      });
+  try {
+    const { companyId } = req.params;
 
-      if (checkExistAccount) {
-        account = await Account.findOne({
-          account_owner_type: "Company",
-          related_party_id: companyId,
-        });
-  
-        if (account) {
-          // Fetch transactions linked to the company's account
-          transactions = await Transaction.find({ account_id: account._id })
-            .sort({ transaction_date: -1 }); // Most recent transactions first
-  
-          // Calculate total revenue (deposits)
-          const totalRevenue = await Transaction.aggregate([
-            { $match: { account_id: account._id, transaction_type: "Deposit" } },
-            { $group: { _id: null, total: { $sum: "$amount" } } },
-          ]);
-  
-          // Calculate total expenses (withdrawals)
-          const totalExpenses = await Transaction.aggregate([
-            { $match: { account_id: account._id, transaction_type: "Withdrawal" } },
-            { $group: { _id: null, total: { $sum: "$amount" } } },
-          ]);
-  
-          totalRevenueAmount = totalRevenue[0]?.total || 0;
-          totalExpensesAmount = totalExpenses[0]?.total || 0;
-        }
-      }
-  
-      // Construct the response data
-      const profileData = {
-        ...company.toObject(),
-      
-        account_balance: account ? account.balance : null, // Null if no account
-        total_revenue: totalRevenueAmount,
-        total_expenses: totalExpensesAmount,
-        net_balance: totalRevenueAmount - totalExpensesAmount,
-        transactions: transactions.slice(0, 3).map((txn) => ({
-          date: txn.transaction_date,
-          description: txn.reason,
-          type: txn.transaction_type,
-          amount: txn.amount,
-          status: txn.transaction_status || "Completed", // Assuming txn.transaction_status exists
-        })),
-      };
-  
-      return res.status(200).json(profileData);
-    } catch (error) {
-      console.error("Error fetching company profile:", error);
-      return res.status(500).json({ message: "Internal server error", error });
+    // Fetch the company profile
+    const company = await Company.findById(companyId);
+
+    if (!company) {
+      return res.status(404).json({ message: "Company not found" });
     }
-  };
 
-  exports.getCompanyProfile = async (req, res) => {
-    try {
-      const { companyId } = req.params;
-  
-      // Fetch the company profile
-      const company = await Company.findById(companyId);
-  
-      if (!company) {
-        return res.status(404).json({ message: "Company not found" });
-      }
-  
-      // Initialize account data
-      let accounts = [];
-      let transactions = [];
-      let totalRevenueAmount = 0;
-      let totalExpensesAmount = 0;
-  
-      // Fetch all accounts related to the company
-      accounts = await Account.find({
+    // Initialize account data
+    let account = null;
+    let transactions = [];
+    let totalRevenueAmount = 0;
+    let totalExpensesAmount = 0;
+
+    // Fetch related account details only if it exists
+    const checkExistAccount = await Account.findOne({
+      account_owner_type: "Company",
+      related_party_id: companyId,
+    });
+
+    if (checkExistAccount) {
+      account = await Account.findOne({
         account_owner_type: "Company",
         related_party_id: companyId,
       });
-  
-      if (accounts.length > 0) {
-        // Fetch transactions linked to the company's accounts
-        transactions = await Transaction.find({
-          account_id: { $in: accounts.map(account => account._id) },
-        }).sort({ transaction_date: -1 }); // Most recent transactions first
-  
-        // Calculate total revenue (Deposit or Investment)
+
+      if (account) {
+        // Fetch transactions linked to the company's account
+        transactions = await Transaction.find({ account_id: account._id })
+          .sort({ transaction_date: -1 }); // Most recent transactions first
+
+        // Calculate total revenue (deposits)
         const totalRevenue = await Transaction.aggregate([
-          {
-            $match: {
-              account_id: { $in: accounts.map(account => account._id) },
-              $or: [
-                { transaction_type: "Deposit" },
-                { transaction_type: "Investment" },
-              ],
-            },
-          },
-          {
-            $group: {
-              _id: null,
-              total: { $sum: "$amount" },
-            },
-          },
+          { $match: { account_id: account._id, transaction_type: "Deposit" } },
+          { $group: { _id: null, total: { $sum: "$amount" } } },
         ]);
-  
-        // Calculate total expenses (Withdrawals)
+
+        // Calculate total expenses (withdrawals)
         const totalExpenses = await Transaction.aggregate([
-          {
-            $match: {
-              account_id: { $in: accounts.map(account => account._id) },
-              transaction_type: "Withdrawal",
-            },
-          },
-          {
-            $group: {
-              _id: null,
-              total: { $sum: "$amount" },
-            },
-          },
+          { $match: { account_id: account._id, transaction_type: "Withdrawal" } },
+          { $group: { _id: null, total: { $sum: "$amount" } } },
         ]);
-  
+
         totalRevenueAmount = totalRevenue[0]?.total || 0;
         totalExpensesAmount = totalExpenses[0]?.total || 0;
       }
-  
-      // Construct the response data
-      const profileData = {
-        company_name: company.company_name,
-        company_type: company.company_type,
-        email: company.email,
-        phone: company.phone,
-        address: company.address,
-        website: company.website,
-        company_logo: company.company_logo || "https://via.placeholder.com/100",
-        accountsCount: accounts.length,
-        account_balance: accounts.reduce((total, account) => total + account.balance, 0), // Sum of all account balances
-        total_revenue: totalRevenueAmount,
-        total_expenses: totalExpensesAmount,
-        net_balance: totalRevenueAmount - totalExpensesAmount,
-        transactions: transactions.slice(0, 3).map((txn) => ({
-          date: txn.transaction_date,
-          description: txn.reason,
-          type: txn.transaction_type,
-          amount: txn.amount,
-          status: txn.transaction_status || "Completed", // Assuming txn.transaction_status exists
-        })),
-      };
-  
-      return res.status(200).json(profileData);
-    } catch (error) {
-      console.error("Error fetching company profile:", error);
-      return res.status(500).json({ message: "Internal server error", error });
     }
-  };
-  
+
+    // Construct the response data
+    const profileData = {
+      ...company.toObject(),
+
+      account_balance: account ? account.balance : null, // Null if no account
+      total_revenue: totalRevenueAmount,
+      total_expenses: totalExpensesAmount,
+      net_balance: totalRevenueAmount - totalExpensesAmount,
+      transactions: transactions.slice(0, 3).map((txn) => ({
+        date: txn.transaction_date,
+        description: txn.reason,
+        type: txn.transaction_type,
+        amount: txn.amount,
+        status: txn.transaction_status || "Completed", // Assuming txn.transaction_status exists
+      })),
+    };
+
+    return res.status(200).json(profileData);
+  } catch (error) {
+    console.error("Error fetching company profile:", error);
+    return res.status(500).json({ message: "Internal server error", error });
+  }
+};
+
+exports.getCompanyProfile = async (req, res) => {
+  try {
+    const { companyId } = req.params;
+
+    // Fetch the company profile
+    const company = await Company.findById(companyId);
+
+    if (!company) {
+      return res.status(404).json({ message: "Company not found" });
+    }
+
+    // Initialize account data
+    let accounts = [];
+    let transactions = [];
+    let totalRevenueAmount = 0;
+    let totalExpensesAmount = 0;
+
+    // Fetch all accounts related to the company
+    accounts = await Account.find({
+      account_owner_type: "Company",
+      related_party_id: companyId,
+    });
+
+    if (accounts.length > 0) {
+      // Fetch transactions linked to the company's accounts
+      transactions = await Transaction.find({
+        account_id: { $in: accounts.map(account => account._id) },
+      }).sort({ transaction_date: -1 }); // Most recent transactions first
+
+      // Calculate total revenue (Deposit or Investment)
+      const totalRevenue = await Transaction.aggregate([
+        {
+          $match: {
+            account_id: { $in: accounts.map(account => account._id) },
+            $or: [
+              { transaction_type: "Deposit" },
+              { transaction_type: "Investment" },
+            ],
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: "$amount" },
+          },
+        },
+      ]);
+
+      // Calculate total expenses (Withdrawals)
+      const totalExpenses = await Transaction.aggregate([
+        {
+          $match: {
+            account_id: { $in: accounts.map(account => account._id) },
+            transaction_type: "Withdrawal",
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: "$amount" },
+          },
+        },
+      ]);
+
+      totalRevenueAmount = totalRevenue[0]?.total || 0;
+      totalExpensesAmount = totalExpenses[0]?.total || 0;
+    }
+
+    // Construct the response data
+    const profileData = {
+      company_name: company.company_name,
+      company_type: company.company_type,
+      email: company.email,
+      phone: company.phone,
+      address: company.address,
+      website: company.website,
+      company_logo: company.company_logo || "https://via.placeholder.com/100",
+      accountsCount: accounts.length,
+      account_balance: accounts.reduce((total, account) => total + account.balance, 0), // Sum of all account balances
+      total_revenue: totalRevenueAmount,
+      total_expenses: totalExpensesAmount,
+      net_balance: totalRevenueAmount - totalExpensesAmount,
+      transactions: transactions.slice(0, 3).map((txn) => ({
+        date: txn.transaction_date,
+        description: txn.reason,
+        type: txn.transaction_type,
+        amount: txn.amount,
+        status: txn.transaction_status || "Completed", // Assuming txn.transaction_status exists
+      })),
+    };
+
+    return res.status(200).json(profileData);
+  } catch (error) {
+    console.error("Error fetching company profile:", error);
+    return res.status(500).json({ message: "Internal server error", error });
+  }
+};

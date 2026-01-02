@@ -5,13 +5,14 @@ const mongoose = require('mongoose');
 //     ,secretOrKey:'secrect'
 // };
 
-const localUri = 'mongodb://localhost:27017/ishopmaster4'
+const localUri = 'mongodb://localhost:27017/ishopmaster'
 const mongoUri = 'mongodb+srv://jafranjemal:jafran123@cluster0.yai9p.mongodb.net/ishopmaster?retryWrites=true&w=majority'
+const ishopmaster_izone_mobile = 'mongodb+srv://jafranjemal:jafran123@cluster0.yai9p.mongodb.net/ishopmaster-izone-mobile?retryWrites=true&w=majority'
 const dbUri = process.env.NODE_ENV === 'production' ? mongoUri : localUri;
 
 const connectDB = async () => {
     try {
-        await mongoose.connect(dbUri );
+        await mongoose.connect(dbUri);
         console.log('MongoDB Connected');
     } catch (err) {
         console.error('Database connection error:', err.message);

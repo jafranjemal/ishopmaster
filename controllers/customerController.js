@@ -67,7 +67,7 @@ exports.getAllCustomers = async (req, res) => {
 exports.getCustomersAndAccounts = async (req, res) => {
   try {
     const search = req.query.search || "";
-    const page = search ? 1 : Math.max(1, parseInt(req.query.page) || 1); // Reset to page 1 on search
+    const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.max(1, parseInt(req.query.limit) || 10);
     const skip = (page - 1) * limit;
     const sortBy = req.query.sortBy || "created_at";
