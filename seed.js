@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const { seedRoles, seedUsers, seedPermissionsAndRoles, seedDefaultCompany } = require('./seeders/roleSeeder');
 const { issuesSeeder } = require('./seeders/issuesSeeder');
 const { seedWalkInCustomer } = require('./seeders/customerSeeder');
+const { attributeSeeder } = require('./seeders/attributeSeeder');
 const MONGO_URI = process.env.NODE_ENV === 'production' ? process.env.PROD_URI : process.env.LOCAL_URI;
 
 const seedDatabase = async () => {
@@ -20,6 +21,7 @@ const seedDatabase = async () => {
     await seedUsers(mainConnection);
     await seedWalkInCustomer(mainConnection); // Add default walk-in customer
     await issuesSeeder(mainConnection);
+    await attributeSeeder(mainConnection);
     console.log('Database seeded successfully');
     process.exit(0);
   } catch (error) {

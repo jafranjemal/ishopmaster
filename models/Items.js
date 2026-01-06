@@ -15,7 +15,8 @@ const ItemSchema = new mongoose.Schema(
     }, // Item Type
     itemDescription: { type: String }, // Optional description
     manufacturer: { type: String }, // Manufacturer name
-    modelName: { type: String }, // Model name (if applicable)
+    phoneModelId: { type: mongoose.Schema.Types.ObjectId, ref: "PhoneModel" , default: null}, // Link to PhoneModel
+    modelName: { type: String }, // Model name (Text fallback/cache)
     barcode: { type: String, unique: true }, // Unique barcode (if applicable)
 
     costPrice: { type: Number }, // Purchase cost for not selling items    

@@ -9,6 +9,7 @@ const NonSerializedStock = require("../models/NonSerializedStock");
 const Item = require("../models/Items");
 const StockLedger = require("../models/StockLedger");
 const AuditLog = require("../models/AuditLog");
+const Attribute = require("../models/Attribute");
 
 // Create a new purchase
 exports.createPurchase_old = async (req, res) => {
@@ -87,15 +88,22 @@ exports.createPurchase1 = async (req, res) => {
           );
 
         // Create a consistent, searchable name for the variant
-        // e.g., "APPLE IPHONE 12 PRO - COLOR:ROSE GOLD-STORAGE:256GB"
-        // const attributesString = Object.entries(item.variantAttributes)
-        //   .map(([key, value]) => `${value.toUpperCase()}`)
-        //   .sort()
-        //   .join('-');
+        const allAttributes = await Attribute.find().lean();
+        const attrOrderMap = allAttributes.reduce((acc, curr) => {
+          acc[curr.key.toUpperCase()] = curr.order;
+          return acc;
+        }, {});
 
-        const attributesString = (item.variantAttributes || [])
+        const sortedAttrs = (item.variantAttributes || [])
+          .filter(a => a && a.value)
+          .sort((a, b) => {
+            const orderA = attrOrderMap[a.key.toUpperCase()] ?? 99;
+            const orderB = attrOrderMap[b.key.toUpperCase()] ?? 99;
+            return orderA - orderB;
+          });
+
+        const attributesString = sortedAttrs
           .map((attr) => attr.value.toUpperCase())
-          .sort()
           .join("-");
 
         const variantName = attributesString
@@ -199,7 +207,7 @@ exports.createPurchase1 = async (req, res) => {
                   status: "Available",
 
                   // ✅ Save unit-specific data
-                  batteryHealth: serializedUnit.batteryHealth,
+                  batteryHealth: serializedUnit.batteryHealth ?? serializedUnit.battery_health,
                   condition: serializedUnit.condition,
                 },
               ]
@@ -221,6 +229,7 @@ exports.createPurchase1 = async (req, res) => {
           [
             {
               item_id: item.item_id,
+              variant_id: item.variant_id, // ✅ Link to the variant
               purchase_id: purchase._id,
               batch_number: item.batch_number,
               purchaseDate: purchase.purchaseDate,
@@ -311,15 +320,27 @@ exports.createPurchase = async (req, res) => {
     /* ------------------------------------------------
    2. RESOLVE VARIANTS
 --------------------------------------------------*/
+    const allAttributes = await Attribute.find().session(session).lean();
+    const attrOrderMap = allAttributes.reduce((acc, curr) => {
+      acc[curr.key.toUpperCase()] = curr.order;
+      return acc;
+    }, {});
+
     for (const item of data.purchasedItems) {
       if (item.isSerialized && item.variantAttributes) {
         const baseItem = await Item.findById(item.item_id).session(session);
         if (!baseItem) throw new Error("Base item not found.");
 
-        const attributesString = (item.variantAttributes || [])
+        const sortedAttrs = (item.variantAttributes || [])
           .filter(a => a && a.value)
+          .sort((a, b) => {
+            const orderA = attrOrderMap[a.key.toUpperCase()] ?? 99;
+            const orderB = attrOrderMap[b.key.toUpperCase()] ?? 99;
+            return orderA - orderB;
+          });
+
+        const attributesString = sortedAttrs
           .map((a) => a.value.toUpperCase())
-          .sort()
           .join("-");
 
         const variantName = attributesString
@@ -438,6 +459,7 @@ exports.createPurchase = async (req, res) => {
         // Non-serialized
         const existing = await NonSerializedStock.find({
           item_id: item.item_id,
+          variant_id: item.variant_id || null,
         }).session(session);
 
         const opening = existing.reduce((s, e) => s + e.availableQty, 0);
@@ -446,6 +468,7 @@ exports.createPurchase = async (req, res) => {
           [
             {
               item_id: item.item_id,
+              variant_id: item.variant_id || null, // ✅ Added variant support
               purchase_id: purchaseDoc._id,
               purchaseDate: purchaseDoc.purchaseDate,
 
@@ -454,7 +477,6 @@ exports.createPurchase = async (req, res) => {
               beforePurchaseAvailableQty: opening,
               unitCost: item.unitCost,
               sellingPrice: item.sellingPrice,
-              batch_number: batchNo,
               batch_number: batchNo,
               status: "Incoming",
               condition: item.condition || "Brand New",
@@ -481,6 +503,7 @@ exports.createPurchase = async (req, res) => {
         // Ledger
         const previousLedger = await StockLedger.findOne({
           item_id: item.item_id,
+          variant_id: item.variant_id || null,
         })
           .sort({ createdAt: -1 })
           .session(session)
@@ -488,6 +511,7 @@ exports.createPurchase = async (req, res) => {
 
         const ledgerEntry = exports.createStockLedgerEntry({
           item_id: item.item_id,
+          variant_id: item.variant_id || null,
           movementType: "Purchase-In",
           qty: item.purchaseQty,
           previousLedger,
@@ -708,7 +732,10 @@ exports.verifyPurchasePhysical = async (req, res) => {
           await StockLedger.create([ledgerEntry], { session });
         }
       } else {
-        const previousLedger = await StockLedger.findOne({ item_id: item.item_id })
+        const previousLedger = await StockLedger.findOne({
+          item_id: item.item_id,
+          variant_id: item.variant_id || null,
+        })
           .sort({ createdAt: -1 })
           .session(session)
           .lean();
@@ -1872,7 +1899,11 @@ exports.updatePurchase = async (req, res) => {
         // update price fields in NonSerializedStock rows belonging to this purchase only (if client changed pricing)
         if (oldLine && newLine) {
           await NonSerializedStock.updateMany(
-            { purchase_id: existingPurchase._id, item_id: oldLine.item_id },
+            {
+              purchase_id: existingPurchase._id,
+              item_id: oldLine.item_id,
+              variant_id: oldLine.variant_id || null,
+            },
             {
               $set: {
                 unitCost:
@@ -1898,6 +1929,7 @@ exports.updatePurchase = async (req, res) => {
           [
             {
               item_id: newLine.item_id,
+              variant_id: newLine.variant_id || null,
               purchase_id: existingPurchase._id,
               batch_number:
                 finalBatchNumber,
@@ -1909,6 +1941,7 @@ exports.updatePurchase = async (req, res) => {
               unitCost: newLine.unitCost,
               sellingPrice: newLine.sellingPrice,
               unit: newLine.unit || "pcs",
+              condition: newLine.condition || "Brand New"
             },
           ],
           { session }
@@ -1917,7 +1950,7 @@ exports.updatePurchase = async (req, res) => {
         // ledger
         const prevLedger = await StockLedger.findOne({
           item_id: newLine.item_id,
-          variant_id: null,
+          variant_id: newLine.variant_id || null,
         })
           .sort({ createdAt: -1 })
           .session(session)
@@ -1925,6 +1958,7 @@ exports.updatePurchase = async (req, res) => {
 
         const ledger = makeLedgerEntry({
           item_id: newLine.item_id,
+          variant_id: newLine.variant_id || null,
           movementType: "Purchase-In",
           qty: deltaQty,
           previousLedger: prevLedger,
@@ -1941,6 +1975,7 @@ exports.updatePurchase = async (req, res) => {
         const stocks = await NonSerializedStock.find({
           purchase_id: existingPurchase._id,
           item_id: oldLine.item_id,
+          variant_id: oldLine.variant_id || null,
           availableQty: { $gt: 0 },
         })
           .sort({ purchaseDate: 1 })
@@ -1955,7 +1990,7 @@ exports.updatePurchase = async (req, res) => {
 
           const prevLedger = await StockLedger.findOne({
             item_id: st.item_id,
-            variant_id: null,
+            variant_id: st.variant_id || null,
           })
             .sort({ createdAt: -1 })
             .session(session)
@@ -1963,6 +1998,7 @@ exports.updatePurchase = async (req, res) => {
 
           const ledger = makeLedgerEntry({
             item_id: st.item_id,
+            variant_id: st.variant_id || null,
             movementType: "Purchase-NonSerialized-Remove",
             qty: -reduc,
             previousLedger: prevLedger,
@@ -2179,3 +2215,18 @@ exports.createStockLedgerEntry = ({
   memo,
   createdAt: new Date(),
 });
+exports.checkReferenceNumber = async (req, res) => {
+  try {
+    const { referenceNumber } = req.params;
+    // Case-insensitive check for existing reference number
+    const exists = await Purchase.findOne({
+      referenceNumber: { $regex: new RegExp(`^${referenceNumber}$`, "i") },
+    });
+    res.json({ exists: !!exists });
+  } catch (error) {
+    console.error("Error checking reference number:", error);
+    res
+      .status(500)
+      .json({ message: "Error checking reference number", error: error.message });
+  }
+};

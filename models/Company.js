@@ -95,6 +95,22 @@ const companySchema = new mongoose.Schema({
 
   created_at: { type: Date, default: Date.now },
   updated_at: { type: Date, default: Date.now },
+
+  // Invoice Totals Visibility
+  invoice_show_total_items: { type: Boolean, default: true },
+  invoice_show_subtotal: { type: Boolean, default: true },
+  invoice_show_discount: { type: Boolean, default: true },
+  invoice_show_net_total: { type: Boolean, default: true },
+  invoice_show_due: { type: Boolean, default: true },
+
+  // Invoice Footer Visibility
+  invoice_show_footer_terms: { type: Boolean, default: true },
+  invoice_show_footer_note: { type: Boolean, default: true },
+  invoice_show_footer_signatures: { type: Boolean, default: true },
+
+  invoice_footer_line_height: { type: Number, default: 1.0 },
+  invoice_terms_align: { type: String, default: "left" },
+
 });
 
 const Company = mongoose.model("Company", companySchema);

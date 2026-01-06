@@ -8,6 +8,9 @@ router.post('/', PhoneModelController.createPhoneModels);
 // Get all phone models of a specific brand
 router.get('/brand/:brandId', PhoneModelController.getPhoneModelsByBrand);
 
+// Get phone models with pagination (MUST BE BEFORE /:phoneModelId)
+router.get('/pagination', PhoneModelController.getPhoneModelsWithPagination);
+
 // Get all phone models
 router.get('/', PhoneModelController.getAllPhoneModels);
 
@@ -28,9 +31,6 @@ router.delete('/', PhoneModelController.deletePhoneModels);
 
 // Bulk update phone models
 //router.put('/bulk', PhoneModelController.bulkUpdatePhoneModels);
-
-// Get phone models with pagination
-//router.get('/pagination', PhoneModelController.getPhoneModelsWithPagination);
 
 // Search phone models by name
 //router.get('/search', PhoneModelController.searchPhoneModelsByName);

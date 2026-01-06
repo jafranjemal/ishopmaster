@@ -23,7 +23,7 @@ const SerializedStockSchema = new mongoose.Schema({
   simType: { type: String }, // SIM type (e.g., Nano)
   batteryCapacity: { type: Number }, // Number of SIM slots
   batteryHealth: { type: Number }, // Number of SIM slots
-  condition: { type: String, enum: ["Brand New", "Like New", "Used", "Refurbished", "Damaged"], required: true },
+  condition: { type: String, enum: ["Brand New", "Like New", "Open Box", "Used Grade A", "Used Grade B", "Used", "Pre-Owned", "Refurbished", "Active", "Non-Active", "Damaged"], required: true },
   previouslySold: { type: Boolean, default: false },
   returnReference: { type: mongoose.Schema.Types.ObjectId, ref: "SalesInvoice" },
   lastReturnReason: { type: String },

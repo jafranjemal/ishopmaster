@@ -8,10 +8,14 @@ const {
     calculateProfit,
     editProduct,
     deleteProduct,
+    checkItemName,
+    checkBarcode,
 } = require('../controllers/productController');
 
 // Routes
 router.get('/', getProducts); // Get all products
+router.get('/check-name', checkItemName); // Check for duplicate names
+router.get('/check-barcode', checkBarcode); // Check for duplicate barcodes/SKUs
 router.get('/:id', getProductById); // Get product by ID
 router.post('/', addProduct); // Add a new product
 router.put('/:id', editProduct); // edit product

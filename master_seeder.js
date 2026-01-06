@@ -160,25 +160,41 @@ const seedMasterData = async (isScript = false, logCallback = null) => {
         brandId: brandDoc._id,
         description: `Specs: ${JSON.stringify(deviceSpecs[modelDef.name])}`
       });
+    }
 
-      const img = getPhoneImageUrl(modelDef.brand, modelDef.name);
+    // Insert Phone Models FIRST to get IDs
+    modelsArr = await PhoneModel.insertMany(modelDocs, { session });
+    log(`Seeded ${modelsArr.length} phone models.`, 'success');
+
+    // Create Items using the inserted models
+    for (const modelDoc of modelsArr) {
+      // Look up original specs using the name
+      const specs = deviceSpecs[modelDoc.model_name];
+      const brandDoc = brandsArr.find(b => b._id.toString() === modelDoc.brandId.toString());
+
+      // Determine brand name (fallback to Apple if logic fails, but current logic is hardcoded Apple)
+      const brandName = brandDoc ? brandDoc.name : 'APPLE';
+
+      const img = getPhoneImageUrl(brandName, modelDoc.model_name);
+
       itemsToSeed.push({
-        itemName: `${modelDef.brand} ${modelDef.name}`.toUpperCase(),
+        itemName: `${brandName} ${modelDoc.model_name}`.toUpperCase(),
         itemImage: img,
         category: 'Device',
-        manufacturer: modelDef.brand,
+        manufacturer: brandName,
+        phoneModelId: modelDoc._id, // LINKED!
+        modelName: modelDoc.model_name, // Fallback/Cache
         units: 'Piece',
         barcode: `BAR-${Math.random().toString(36).substring(7).toUpperCase()}`,
         sku: `SKU-${Math.random().toString(36).substring(7).toUpperCase()}`,
         serialized: true,
-        ramSize: deviceSpecs[modelDef.name]?.ram || '',
-        storageSize: deviceSpecs[modelDef.name]?.storage || '',
-        displaySize: deviceSpecs[modelDef.name]?.display || '',
-        batteryCapacity: deviceSpecs[modelDef.name]?.batt || 0
+        ramSize: specs?.ram || '',
+        storageSize: specs?.storage || '',
+        displaySize: specs?.display || '',
+        batteryCapacity: specs?.batt || 0
       });
     }
 
-    modelsArr = await PhoneModel.insertMany(modelDocs, { session });
     itemDocs = await Item.insertMany(itemsToSeed, { session });
     log(`Seeded ${itemDocs.length} real devices.`, 'success');
 

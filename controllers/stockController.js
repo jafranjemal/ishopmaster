@@ -1311,7 +1311,7 @@ exports.getUnifiedStock3 = async (req, res) => {
 // Controller: getUnifiedStock (variant-first, field-complete, correct totals)
 exports.getUnifiedStock = async (req, res) => {
   try {
-    const { search, page, limit, category } = req.query;
+    const { search, page, limit, category, includeEmptyBase } = req.query;
 
     // 1) Load items with optional search and pagination
     let query = {};
@@ -1584,6 +1584,7 @@ exports.getUnifiedStock = async (req, res) => {
           result.push({
             ...item, // keep every item field
             _id: item._id, // required: all variants share item_id
+            uId: `${itemKey}_${v._id}`, // Unique ID for UI expansion
             isVariant: true,
             isSerialized: item.serialized,
 
@@ -1592,7 +1593,7 @@ exports.getUnifiedStock = async (req, res) => {
             variantName: v.variantName,
             variantAttributes: v.variantAttributes || [],
             sku: v.sku || null,
-            barcode: item.barcode || null,
+            barcode: v.barcode || item.barcode || null, // Priority to variant barcode
             defaultSellingPrice: v.defaultSellingPrice || 0,
             variantLastUnitCost: v.lastUnitCost || 0,
             batteryHealth: ag?.batteryHealth || null,
@@ -1603,9 +1604,9 @@ exports.getUnifiedStock = async (req, res) => {
               ag?.lastSellingPrice ?? v.defaultSellingPrice ?? 0,
             lastUnitCost: ag?.lastUnitCost ?? v.lastUnitCost ?? 0,
 
-            // Enriched arrays
-            serializedItems: ag?.batches || [],
-            batches: ag?.batches || [],
+            // Enriched arrays - SORTED Newest First
+            serializedItems: (ag?.batches || []).sort((a, b) => new Date(b.purchaseDate) - new Date(a.purchaseDate)),
+            batches: (ag?.batches || []).sort((a, b) => new Date(b.purchaseDate) - new Date(a.purchaseDate)),
 
             // Optional: keep non-serialized reference if you need it on variant rows
             // (Usually 0 because non-serialized isn't variant-tracked)
@@ -1618,10 +1619,15 @@ exports.getUnifiedStock = async (req, res) => {
         // This prevents showing a redundant "Base" row for items that are fully variant-tracked.
         const serNoVar = serMap.get(`${itemKey}__null`);
         const ns = nonSerMap.get(itemKey);
-        if ((ns && ns.totalStock > 0) || (serNoVar && serNoVar.totalAvailable > 0)) {
+        if (
+          (ns && ns.totalStock > 0) ||
+          (serNoVar && serNoVar.totalAvailable > 0) ||
+          includeEmptyBase === "true"
+        ) {
           result.push({
             ...item,
             _id: item._id,
+            uId: `${itemKey}_base`,
             isSerialized: item.serialized,
             isVariant: false,
             isBase: true,
@@ -1632,8 +1638,8 @@ exports.getUnifiedStock = async (req, res) => {
             totalStock: (ns?.totalStock || 0) + (serNoVar?.totalAvailable || 0),
             lastSellingPrice: serNoVar?.lastSellingPrice || ns?.lastSellingPrice || item.pricing?.sellingPrice || 0,
             lastUnitCost: serNoVar?.lastUnitCost || ns?.lastUnitCost || 0,
-            batches: [...(ns?.batches || []), ...(serNoVar?.batches || [])],
-            serializedItems: serNoVar?.batches || [],
+            batches: [...(ns?.batches || []), ...(serNoVar?.batches || [])].sort((a, b) => new Date(b.purchaseDate) - new Date(a.purchaseDate)),
+            serializedItems: (serNoVar?.batches || []).sort((a, b) => new Date(b.purchaseDate) - new Date(a.purchaseDate)),
           });
         }
       } else {
@@ -1644,6 +1650,7 @@ exports.getUnifiedStock = async (req, res) => {
         result.push({
           ...item,
           _id: item._id,
+          uId: `${itemKey}_base`,
           isSerialized: item.serialized,
           isVariant: false,
           variant_id: null,
@@ -1660,11 +1667,10 @@ exports.getUnifiedStock = async (req, res) => {
           lastSellingPrice:
             serNoVar?.lastSellingPrice ?? ns?.lastSellingPrice ?? 0,
           lastUnitCost: serNoVar?.lastUnitCost ?? ns?.lastUnitCost ?? 0,
-          serializedItems: serNoVar?.batches || [],
+          serializedItems: (serNoVar?.batches || []).sort((a, b) => new Date(b.purchaseDate) - new Date(a.purchaseDate)),
 
-          //serializedItems: serNoVar?.stockUnits || [],
           // Merge batch views (heterogeneous entries: serialized vs non-serialized)
-          batches: [...(ns?.batches || []), ...(serNoVar?.batches || [])],
+          batches: [...(ns?.batches || []), ...(serNoVar?.batches || [])].sort((a, b) => new Date(b.purchaseDate) - new Date(a.purchaseDate)),
 
           nonSerialized: ns || null,
         });

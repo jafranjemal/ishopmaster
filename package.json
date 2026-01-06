@@ -22,7 +22,7 @@
     "start": "nodemon server.js"
   },
   "name": "api",
-  "version": "1.0.20",
+  "version": "1.0.21",
   "main": "server.js",
   "author": "jafran jemal",
   "license": "ISC",

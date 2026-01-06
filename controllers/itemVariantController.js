@@ -1,6 +1,8 @@
 const { default: mongoose } = require('mongoose');
 const ItemVariant = require('../models/ItemVariantSchema'); // Using the schema file which exports the model
 const Item = require('../models/Items');
+const SerializedStock = require('../models/SerializedStock');
+const NonSerializedStock = require('../models/NonSerializedStock');
 
 // Get all variants for a specific item
 // Get all variants for a specific item with stock aggregation
@@ -80,6 +82,26 @@ const createVariant = async (req, res) => {
             return res.status(404).json({ message: "Base Item not found" });
         }
 
+        // --- Safeguard: Check for existing base stock ---
+        const serializedStockCount = await SerializedStock.countDocuments({
+            item_id: item_id,
+            variant_id: null
+        }).session(session);
+
+        const nonSerializedStockCount = await NonSerializedStock.countDocuments({
+            item_id: item_id,
+            variant_id: null,
+            availableQty: { $gt: 0 }
+        }).session(session);
+
+        if (serializedStockCount > 0 || nonSerializedStockCount > 0) {
+            await session.abortTransaction();
+            return res.status(400).json({
+                message: "Cannot add variants to an item that already has base stock. Please create a new item or clear existing stock first."
+            });
+        }
+        // -----------------------------------------------
+
         const newVariant = new ItemVariant({
             item_id,
             variantName: variantName.toUpperCase(), // Normalize to uppercase
@@ -104,7 +126,9 @@ const createVariant = async (req, res) => {
         await session.abortTransaction();
 
         if (error.code === 11000) {
-            return res.status(409).json({ message: "Duplicate Variant Name, SKU, or Barcode" });
+            const field = Object.keys(error.keyPattern)[0];
+            const message = `Duplicate ${field === 'barcode' ? 'Barcode' : field === 'sku' ? 'SKU' : 'Variant Name'} detected`;
+            return res.status(409).json({ message });
         }
         res.status(400).json({ message: error.message });
     } finally {
@@ -147,9 +171,37 @@ const deleteVariant = async (req, res) => {
     }
 };
 
+// Check if variant name/attributes already exist for an item
+const checkDuplicateVariant = async (req, res) => {
+    try {
+        const { itemId, name, excludeId } = req.query;
+        if (!itemId || !name) {
+            return res.status(400).json({ message: "itemId and name are required" });
+        }
+
+        const query = {
+            item_id: new mongoose.Types.ObjectId(itemId),
+            variantName: {
+                $regex: new RegExp(`^${name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i')
+            }
+        };
+
+        if (excludeId && mongoose.Types.ObjectId.isValid(excludeId)) {
+            query._id = { $ne: new mongoose.Types.ObjectId(excludeId) };
+        }
+
+        const existing = await ItemVariant.findOne(query).select('variantName');
+        res.status(200).json({ exists: !!existing });
+    } catch (error) {
+        console.error('checkDuplicateVariant error:', error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
 module.exports = {
     getVariantsByItem,
     createVariant,
     updateVariant,
-    deleteVariant
+    deleteVariant,
+    checkDuplicateVariant
 };

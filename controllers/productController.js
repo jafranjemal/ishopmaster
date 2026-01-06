@@ -2,6 +2,7 @@ const Item = require('../models/Items');
 const Stock = require('../models/Stock');
 const SerializedStock = require('../models/SerializedStock');
 const NonSerializedStock = require('../models/NonSerializedStock');
+const ItemVariant = require('../models/ItemVariantSchema');
 const mongoose = require('mongoose');
 
 // Get all products with pagination, filtering, and sorting
@@ -102,6 +103,25 @@ const getProducts = async (req, res) => {
               { $ifNull: [{ $arrayElemAt: ['$serializedStockData.total', 0] }, 0] }
             ]
           }
+        }
+      },
+      // Lookup 4: Variant Count
+      {
+        $lookup: {
+          from: 'itemvariants',
+          localField: '_id',
+          foreignField: 'item_id',
+          as: 'variants'
+        }
+      },
+      {
+        $addFields: {
+          variantCount: { $size: '$variants' }
+        }
+      },
+      {
+        $project: {
+          variants: 0 // Remove the variants array to keep response small
         }
       }
     ]);
@@ -212,6 +232,23 @@ const addProduct = async (req, res) => {
     // Create new product
     const product = new Item(productData);
     const savedProduct = await product.save();
+
+    // --- Automatically create a DEFAULT variant ---
+    try {
+      await ItemVariant.create({
+        item_id: savedProduct._id,
+        variantName: 'DEFAULT',
+        sku: savedProduct.sku || null,
+        barcode: savedProduct.barcode || null,
+        defaultSellingPrice: savedProduct.pricing?.sellingPrice || 0,
+        lastUnitCost: savedProduct.lastUnitCost || 0
+      });
+      console.log(`Default variant created for item: ${savedProduct.itemName}`);
+    } catch (variantErr) {
+      console.error('Error creating default variant:', variantErr);
+      // We don't fail the whole request if the variant fails, but it should ideally work.
+    }
+    // ----------------------------------------------
 
     res.status(201).json({
       success: true,
@@ -337,7 +374,7 @@ const deleteProduct = async (req, res) => {
 const StockLedger = require('../models/StockLedger');
 const Purchase = require('../models/Purchase');
 
-// Get item intelligence (Stock Ledger + Supplier History)
+// Get item intelligence (Stock Ledger + Supplier History + Granular Stock)
 const getItemAnalytics = async (req, res) => {
   try {
     const { id } = req.params;
@@ -397,14 +434,13 @@ const getItemAnalytics = async (req, res) => {
     // 2. Fetch Stock Ledger History (Most recent first)
     const ledger = await StockLedger.find({ item_id: id })
       .sort({ createdAt: -1 })
-      .limit(50); // Limit to last 50 movements for performance
+      .limit(50);
 
     // 3. Fetch Purchase History with Supplier Details
     const purchases = await Purchase.find({ "purchasedItems.item_id": id })
       .populate('supplier', 'business_name contact_info supplier_id')
       .sort({ purchaseDate: -1 });
 
-    // Extract specific supplier metrics from purchases
     const supplierHistory = purchases.map(p => {
       const itemEntry = p.purchasedItems.find(pi => pi.item_id.toString() === id);
       return {
@@ -418,16 +454,101 @@ const getItemAnalytics = async (req, res) => {
       };
     });
 
+    // 4. NEW: Fetch Granular Stock Details (Serials and Batches)
+    // Fetch all "Available" serials for this item
+    const availableSerialsRaw = await SerializedStock.find({
+      item_id: id,
+      status: 'Available'
+    }).populate({ path: 'variant_id', select: 'variantName', strictPopulate: false }).lean();
+
+    // Map to ensure batteryHealth is correctly picked up
+    const availableSerials = availableSerialsRaw.map(s => ({
+      ...s,
+      batteryHealth: s.batteryHealth // Keep battery_health just in case of snake_case DB fields
+    }));
+
+    // Fetch all active batches for non-serialized stock
+    const activeBatches = await NonSerializedStock.find({
+      item_id: id,
+      availableQty: { $gt: 0 }
+    }).populate({ path: 'variant_id', select: 'variantName', strictPopulate: false });
+
     res.status(200).json({
       success: true,
       data: {
         item,
         ledger,
-        supplierHistory
+        supplierHistory,
+        availableSerials,
+        activeBatches
       }
     });
   } catch (err) {
     console.error('Error fetching item analytics:', err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// Check if item name exists (for frontend validation)
+const checkItemName = async (req, res) => {
+  try {
+    const { name, excludeId } = req.query;
+    if (!name) return res.status(400).json({ message: 'Name query parameter is required' });
+
+    const query = {
+      itemName: {
+        $regex: new RegExp(`^${name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i')
+      }
+    };
+
+    if (excludeId && mongoose.Types.ObjectId.isValid(excludeId)) {
+      query._id = { $ne: new mongoose.Types.ObjectId(excludeId) };
+    }
+
+    const existing = await Item.findOne(query).select('itemName');
+    res.status(200).json({ exists: !!existing });
+  } catch (err) {
+    console.error('checkItemName error:', err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// Check if barcode or SKU exists across items and variants
+const checkBarcode = async (req, res) => {
+  try {
+    const { value, excludeId } = req.query;
+    if (!value) return res.status(400).json({ message: 'Value query parameter is required' });
+
+    // 1. Check in Items (Barcode only)
+    const itemQuery = { barcode: value };
+    if (excludeId && mongoose.Types.ObjectId.isValid(excludeId)) {
+      itemQuery._id = { $ne: new mongoose.Types.ObjectId(excludeId) };
+    }
+    const existingItem = await Item.findOne(itemQuery).select('barcode itemName');
+    if (existingItem) {
+      return res.status(200).json({ exists: true, type: 'Item', name: existingItem.itemName, field: 'barcode' });
+    }
+
+    // 2. Check in ItemVariants (Barcode or SKU)
+    const variantQuery = {
+      $or: [
+        { barcode: value },
+        { sku: value }
+      ]
+    };
+    if (excludeId && mongoose.Types.ObjectId.isValid(excludeId)) {
+      variantQuery._id = { $ne: new mongoose.Types.ObjectId(excludeId) };
+    }
+    const ItemVariant = require('../models/ItemVariantSchema');
+    const existingVariant = await ItemVariant.findOne(variantQuery).select('barcode sku variantName');
+    if (existingVariant) {
+      const field = existingVariant.barcode === value ? 'barcode' : 'sku';
+      return res.status(200).json({ exists: true, type: 'Variant', name: existingVariant.variantName, field });
+    }
+
+    res.status(200).json({ exists: false });
+  } catch (err) {
+    console.error('checkBarcode error:', err);
     res.status(500).json({ message: err.message });
   }
 };
@@ -441,4 +562,6 @@ module.exports = {
   addBatchToProduct,
   calculateProfit,
   getItemAnalytics,
+  checkItemName,
+  checkBarcode
 };

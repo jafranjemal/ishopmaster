@@ -12,18 +12,19 @@ exports.getNonSerializedStock = async (req, res) => {
 
 // Add non-serialized stock
 exports.addNonSerializedStock = async (req, res) => {
-  const { item_id, purchase_id, batch_number, purchase_qty, unit_cost, selling_price, purchase_date } = req.body;
+  const { item_id, variant_id, purchase_id, batch_number, purchaseQty, unitCost, sellingPrice, purchaseDate } = req.body;
 
   try {
     const newStock = new NonSerializedStock({
       item_id,
+      variant_id,
       purchase_id,
       batch_number,
-      purchase_qty,
-      available_qty: purchase_qty,
-      unit_cost,
-      selling_price,
-      purchase_date,
+      purchaseQty,
+      availableQty: purchaseQty,
+      unitCost,
+      sellingPrice,
+      purchaseDate,
     });
 
     const savedStock = await newStock.save();

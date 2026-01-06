@@ -77,8 +77,12 @@ exports.generateWarrantiesForInvoice = async (invoiceId) => {
         }
     }
 
+    // Generate warranties sequentially to trigger pre('save') hooks for ID generation
     if (warranties.length > 0) {
-        await Warranty.insertMany(warranties);
+        // await Warranty.insertMany(warranties);
+        for (const w of warranties) {
+            await new Warranty(w).save();
+        }
     }
 };
 

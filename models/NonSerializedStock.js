@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 
 const NonSerializedStockSchema = new mongoose.Schema({
+  variant_id: { type: mongoose.Schema.Types.ObjectId, ref: "ItemVariant" },
   item_id: { type: mongoose.Schema.Types.ObjectId, ref: "Item", required: true },
   purchase_id: { type: mongoose.Schema.Types.ObjectId, ref: "Purchase", required: true },
   batch_number: { type: String, required: true }, // Unique for batch
@@ -11,7 +12,7 @@ const NonSerializedStockSchema = new mongoose.Schema({
   unitCost: { type: Number, required: true }, // Purchase price per unit
   beforePurchaseAvailableQty: { type: Number, required: false, default: 0 }, // Purchase price per unit
   sellingPrice: { type: Number, required: true }, // Selling price per unit
-  condition: { type: String, enum: ["Brand New", "Used", "Refurbished", "Damaged"], required: true },
+  condition: { type: String, enum: ["Brand New", "Like New", "Open Box", "Used Grade A", "Used Grade B", "Used", "Pre-Owned", "Refurbished", "Active", "Non-Active", "Damaged"], required: true },
   expiryDate: { type: Date }, // Optional: Expiry date for consumables
   adjustmentReason: { type: String }, // Optional: Reason for adjustment
   unit: { type: String }, // Optional: Reason for adjustment

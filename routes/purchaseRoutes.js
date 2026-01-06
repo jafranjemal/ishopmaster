@@ -12,5 +12,6 @@ router.put("/usp/:purchaseId", authenticate, purchaseController.updatePurchaseSe
 router.delete("/:purchaseId", authenticate, purchaseController.deletePurchase);
 router.post("/verify/:id", authenticate, purchaseController.verifyPurchasePhysical);
 router.get('/due-purchases/supplier/:id', authenticate, purchaseController.getDuePurchaseBySupplierId);
+router.get("/check-reference/:referenceNumber", authenticate, purchaseController.checkReferenceNumber);
 
 module.exports = router;

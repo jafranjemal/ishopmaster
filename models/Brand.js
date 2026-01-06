@@ -3,10 +3,10 @@ const mongoose = require("mongoose");
 
 const brandSchema = new mongoose.Schema(
   {
-    name: { type: String, required: true, unique: true },
+    name: { type: String, required: true, unique: true, uppercase: true, trim: true },
     description: { type: String, default: "" },
     image: { type: String }, // URL of the brand logo or image
-   
+
   },
   { timestamps: true }
 );
