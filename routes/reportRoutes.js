@@ -10,5 +10,6 @@ router.get('/supplier-intelligence', protect, reportController.getSupplierIntell
 router.get('/stock-valuation', protect, reportController.getStockValuation);
 router.get('/service-vs-retail', protect, reportController.getServiceVsRetail);
 router.get('/forecasting', protect, reportController.getForecasting);
+router.get('/comprehensive-audit', protect, reportController.getComprehensiveAudit);
 
 module.exports = router;
