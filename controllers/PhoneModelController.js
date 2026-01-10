@@ -1,16 +1,17 @@
- 
+
 const { default: mongoose } = require('mongoose');
 const PhoneModel = require('../models/PhoneModel');
+const Brand = require('../models/Brand');
 
 
 // Create single or multiple phone models
 exports.createPhoneModels = async (req, res) => {
-    try {
-      // Check if the body contains an array of phone models
-      const phoneModels = Array.isArray(req.body) ? req.body : [req.body];
-  
-      // Check for duplicate names
-         // Check for duplicate phone models
+  try {
+    // Check if the body contains an array of phone models
+    const phoneModels = Array.isArray(req.body) ? req.body : [req.body];
+
+    // Check for duplicate names
+    // Check for duplicate phone models
     const duplicateModels = [];
     for (const phoneModelData of phoneModels) {
       const existingPhoneModel = await PhoneModel.findOne({
@@ -30,24 +31,24 @@ exports.createPhoneModels = async (req, res) => {
         error: 'Duplicate entries found'
       });
     }
-  
-      // Loop through the array and create each phone model
-      const createdPhoneModels = await PhoneModel.insertMany(phoneModels);
-  
-      res.status(201).json({
-        success: true,
-        message: 'Phone models created successfully.',
-        data: createdPhoneModels
-      });
-    } catch (err) {
-      console.log(err);
-      res.status(500).json({
-        success: false,
-        message: 'Server error while creating phone models.',
-        error: err.message
-      });
-    }
-  };
+
+    // Loop through the array and create each phone model
+    const createdPhoneModels = await PhoneModel.insertMany(phoneModels);
+
+    res.status(201).json({
+      success: true,
+      message: 'Phone models created successfully.',
+      data: createdPhoneModels
+    });
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while creating phone models.',
+      error: err.message
+    });
+  }
+};
 
 // Get all phone models of a specific brand
 exports.getPhoneModelsByBrand = async (req, res) => {
@@ -161,41 +162,41 @@ exports.updatePhoneModel = async (req, res) => {
 
 // Delete a single phone model
 exports.deletePhoneModel = async (req, res) => {
-    try {
-      const phoneModelId = req.params.phoneModelId;
-  
-      // Validate phoneModelId
-      if (!mongoose.Types.ObjectId.isValid(phoneModelId)) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid phone model ID.'
-        });
-      }
-  
-      // Find and delete a single phone model by id
-      const deletedPhoneModel = await PhoneModel.findByIdAndDelete(phoneModelId);
-  
-      if (!deletedPhoneModel) {
-        return res.status(404).json({
-          success: false,
-          message: 'Phone model not found.'
-        });
-      }
-  
-      res.status(200).json({
-        success: true,
-        message: 'Phone model deleted successfully.',
-        data: deletedPhoneModel
-      });
-    } catch (err) {
-      console.error('Error deleting phone model:', err);
-      res.status(500).json({
+  try {
+    const phoneModelId = req.params.phoneModelId;
+
+    // Validate phoneModelId
+    if (!mongoose.Types.ObjectId.isValid(phoneModelId)) {
+      return res.status(400).json({
         success: false,
-        message: 'Server error while deleting phone model.',
-        error: err.message
+        message: 'Invalid phone model ID.'
       });
     }
-  };
+
+    // Find and delete a single phone model by id
+    const deletedPhoneModel = await PhoneModel.findByIdAndDelete(phoneModelId);
+
+    if (!deletedPhoneModel) {
+      return res.status(404).json({
+        success: false,
+        message: 'Phone model not found.'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Phone model deleted successfully.',
+      data: deletedPhoneModel
+    });
+  } catch (err) {
+    console.error('Error deleting phone model:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Server error while deleting phone model.',
+      error: err.message
+    });
+  }
+};
 
 // Delete multiple phone models
 exports.deletePhoneModels = async (req, res) => {
@@ -225,7 +226,7 @@ exports.deletePhoneModels = async (req, res) => {
     });
   }
 };
- 
+
 // Get phone models by specific criteria
 exports.getPhoneModelsByCriteria = async (req, res) => {
   try {
@@ -259,7 +260,7 @@ exports.bulkUpdatePhoneModels = async (req, res) => {
   try {
     const updates = req.body; // Expecting an array of updates
 
-    const updatePromises = updates.map(update => 
+    const updatePromises = updates.map(update =>
       PhoneModel.findByIdAndUpdate(update.id, update.data, { new: true }).populate('brandId')
     );
 
@@ -278,16 +279,30 @@ exports.bulkUpdatePhoneModels = async (req, res) => {
     });
   }
 };
- 
+
 // Get phone models with pagination
 exports.getPhoneModelsWithPagination = async (req, res) => {
   try {
-    const { page = 1, limit = 10 } = req.query; // Default to page 1 and limit 10
+    const { page = 1, limit = 10, search } = req.query; // Default to page 1 and limit 10
     const skip = (page - 1) * limit;
 
-    const phoneModels = await PhoneModel.find().populate('brandId').skip(skip).limit(limit);
+    let query = {};
+    if (search) {
+      // 1. Find matching brands
+      const matchingBrands = await Brand.find({ name: { $regex: search.trim(), $options: 'i' } }).select('_id');
+      const brandIds = matchingBrands.map(b => b._id);
 
-    const total = await PhoneModel.countDocuments();
+      query = {
+        $or: [
+          { model_name: { $regex: search.trim(), $options: 'i' } },
+          { brandId: { $in: brandIds } }
+        ]
+      };
+    }
+
+    const phoneModels = await PhoneModel.find(query).populate('brandId').sort({ _id: -1 }).skip(skip).limit(limit);
+
+    const total = await PhoneModel.countDocuments(query);
 
     res.status(200).json({
       success: true,
@@ -334,4 +349,82 @@ exports.searchPhoneModelsByName = async (req, res) => {
     });
   }
 };
- 
+
+const { getRegistryForSync } = require('../data/DeviceMasterData');
+
+// Master Registry Sync Utility (Automated Bootstrap)
+exports.syncMasterRegistry = async (req, res) => {
+  try {
+    const MASTER_REGISTRY = getRegistryForSync();
+
+    let createdBrands = 0;
+    let createdModels = 0;
+    let updatedColorsCount = 0;
+    const debugLogs = [];
+
+    for (const entry of MASTER_REGISTRY) {
+      // 1️⃣ Ensure Brand exists
+      let brandDoc = await Brand.findOne({ name: entry.brand });
+      if (!brandDoc) {
+        brandDoc = await Brand.create({ name: entry.brand });
+        createdBrands++;
+      }
+
+      // 2️⃣ Upsert Model & Sync Colors
+      const filter = {
+        model_name: entry.model.toUpperCase().trim(),
+        brandId: brandDoc._id
+      };
+
+      const update = {
+        $set: {
+          model_name: entry.model.toUpperCase().trim(),
+          brandId: brandDoc._id,
+          colors: entry.colors || []
+        }
+      };
+
+      const options = { upsert: true, returnDocument: 'after', rawResult: true };
+      const result = await PhoneModel.findOneAndUpdate(filter, update, options);
+
+      let dbColors = [];
+      if (result.value) {
+        dbColors = result.value.colors || [];
+      } else if (result.lastErrorObject && result.lastErrorObject.upserted) {
+        // Newly inserted doc — use master colors
+        dbColors = entry.colors || [];
+        createdModels++;
+      }
+
+      // Count color updates
+      const masterColors = entry.colors || [];
+      if (dbColors.join(',') !== masterColors.join(',')) {
+        updatedColorsCount++;
+      }
+
+      // Debug for troubleshooting
+      if (entry.model.includes('13')) {
+        debugLogs.push({
+          model: entry.model,
+          dbColors,
+          masterColors,
+          matched: JSON.stringify(dbColors) === JSON.stringify(masterColors)
+        });
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      summary: {
+        brandsCreated: createdBrands,
+        modelsCreated: createdModels,
+        modelsColorUpdated: updatedColorsCount
+      },
+      debugLogs
+    });
+  } catch (err) {
+    console.error('Sync Registry Error:', err);
+    res.status(500).json({ success: false, message: 'Registry sync failed', error: err.message });
+  }
+};
+

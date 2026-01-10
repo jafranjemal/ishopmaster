@@ -20,4 +20,7 @@ router.delete('/:id', DeviceInspectionController.deleteInspection);
 // Get inspections by Customer ID
 router.get('/customer/:customerId', DeviceInspectionController.getInspectionsByCustomer);
 
+// Get history by Device ID
+router.get('/history/:deviceId', DeviceInspectionController.getHistoryByDevice);
+
 module.exports = router;

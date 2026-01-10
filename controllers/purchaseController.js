@@ -1,5 +1,5 @@
 const Purchase = require("../models/Purchase");
-const Stock = require("../models/Stock");
+// const Stock = require("../models/Stock"); // Legacy
 const Account = require("../models/Account");
 const ItemVariant = require("../models/ItemVariantSchema");
 const Transaction = require("../models/Transaction");
@@ -10,6 +10,8 @@ const Item = require("../models/Items");
 const StockLedger = require("../models/StockLedger");
 const AuditLog = require("../models/AuditLog");
 const Attribute = require("../models/Attribute");
+const Supplier = require("../models/Supplier");
+const Customer = require("../models/Customer");
 
 // Create a new purchase
 exports.createPurchase_old = async (req, res) => {
@@ -305,14 +307,25 @@ exports.createPurchase = async (req, res) => {
     data.purchase_status = "Pending Verification";
 
     /* ------------------------------------------------
-   1. VALIDATE SUPPLIER + INPUT DATA
+   1. VALIDATE SUPPLIER/CUSTOMER + INPUT DATA
 --------------------------------------------------*/
-    const supplierAcc = await Account.findOne({
-      account_owner_type: "Supplier",
-      related_party_id: data.supplier,
+    let accountOwnerType = "Supplier";
+    let relatedPartyId = data.supplier;
+
+    if (data.purchase_type === "Trade-In") {
+      accountOwnerType = "Customer";
+      relatedPartyId = data.customer;
+      if (!relatedPartyId) throw new Error("Customer ID is required for Trade-In.");
+    } else {
+      if (!relatedPartyId) throw new Error("Supplier ID is required for regular Purchase.");
+    }
+
+    const partyAcc = await Account.findOne({
+      account_owner_type: accountOwnerType,
+      related_party_id: relatedPartyId,
     }).session(session);
 
-    if (!supplierAcc) throw new Error("Supplier account not found.");
+    if (!partyAcc) throw new Error(`${accountOwnerType} account not found.`);
 
     if (!Array.isArray(data.purchasedItems) || data.purchasedItems.length === 0)
       throw new Error("No purchase items provided.");
@@ -603,6 +616,7 @@ exports.getAllPurchases = async (req, res) => {
     const purchases = await Purchase.find()
       .sort({ _id: -1 })
       .populate("supplier", "business_name")
+      .populate("customer", "first_name last_name customer_id nic_number")
       .populate("purchasedItems.item_id")
       .populate("purchasedItems.variant_id");
     res.status(200).json(purchases);
@@ -611,7 +625,7 @@ exports.getAllPurchases = async (req, res) => {
   }
 };
 
-// Search purchases by S/N, IMEI, Barcode, or Ref
+// Search purchases by S/N, IMEI, Barcode, Ref, or Supplier/Customer details
 exports.searchPurchases = async (req, res) => {
   try {
     const { query } = req.query;
@@ -629,15 +643,40 @@ exports.searchPurchases = async (req, res) => {
     }, '_id').lean();
     const itemIds = items.map(i => i._id);
 
-    // 3. Perform the main search in Purchase
+    // 3. Find by Supplier Details (Name, Phone, ID)
+    const suppliers = await Supplier.find({
+      $or: [
+        { business_name: { $regex: query, $options: "i" } },
+        { "contact_info.contact_number": { $regex: query, $options: "i" } },
+        { supplier_id: { $regex: query, $options: "i" } }
+      ]
+    }, '_id').lean();
+    const supplierIds = suppliers.map(s => s._id);
+
+    // 4. Find by Customer Details (for Trade-Ins)
+    const customers = await Customer.find({
+      $or: [
+        { first_name: { $regex: query, $options: "i" } },
+        { last_name: { $regex: query, $options: "i" } },
+        { phone_number: { $regex: query, $options: "i" } },
+        { customer_id: { $regex: query, $options: "i" } }
+      ]
+    }, '_id').lean();
+    const customerIds = customers.map(c => c._id);
+
+    // 5. Perform the main search in Purchase
     const purchases = await Purchase.find({
       $or: [
         { referenceNumber: { $regex: query, $options: "i" } },
         { _id: { $in: purchaseIdsFromSerials } },
-        { "purchasedItems.item_id": { $in: itemIds } }
+        { "purchasedItems.item_id": { $in: itemIds } },
+        { supplier: { $in: supplierIds } },
+        { customer: { $in: customerIds } }
       ]
     })
       .populate("supplier", "business_name")
+      .populate("customer", "first_name last_name customer_id phone_number")
+      .populate("purchasedItems.item_id", "itemName barcode")
       .sort({ purchaseDate: -1 })
       .limit(50);
 
@@ -654,6 +693,7 @@ exports.getPurchaseById = async (req, res) => {
     const { id } = req.params;
     const purchase = await Purchase.findById(id)
       .populate("supplier")
+      .populate("customer")
       .populate("purchasedItems.item_id")
       .populate("purchasedItems.variant_id");
     if (!purchase) {
@@ -684,12 +724,20 @@ exports.verifyPurchasePhysical = async (req, res) => {
       throw new Error(`Purchase cannot be verified. Current status: ${purchase.purchase_status}`);
     }
 
-    const supplierAcc = await Account.findOne({
-      account_owner_type: "Supplier",
-      related_party_id: purchase.supplier,
+    let accountOwnerType = "Supplier";
+    let relatedPartyId = purchase.supplier;
+
+    if (purchase.purchase_type === "Trade-In") {
+      accountOwnerType = "Customer";
+      relatedPartyId = purchase.customer;
+    }
+
+    const partyAcc = await Account.findOne({
+      account_owner_type: accountOwnerType,
+      related_party_id: relatedPartyId,
     }).session(session);
 
-    if (!supplierAcc) throw new Error("Supplier account not found");
+    if (!partyAcc) throw new Error(`${accountOwnerType} account not found`);
 
     const expectedTotal = purchase.grand_total;
     const discrepancy = actual_grand_total - expectedTotal;
@@ -772,17 +820,17 @@ exports.verifyPurchasePhysical = async (req, res) => {
     );
 
     // Update Finance Ledger (Actual Received Amount)
-    supplierAcc.balance -= actual_grand_total;
-    await supplierAcc.save({ session });
+    partyAcc.balance -= actual_grand_total;
+    await partyAcc.save({ session });
 
     await Transaction.create(
       [
         {
-          account_id: supplierAcc._id,
+          account_id: partyAcc._id,
           amount: actual_grand_total * -1,
           transaction_type: "Withdrawal",
-          reason: `Verified Purchase: ${purchase.referenceNumber} ${discrepancy !== 0 ? "(Discrepancy Logged)" : ""}`,
-          balance_after_transaction: supplierAcc.balance,
+          reason: `Verified ${purchase.purchase_type}: ${purchase.referenceNumber} ${discrepancy !== 0 ? "(Discrepancy Logged)" : ""}`,
+          balance_after_transaction: partyAcc.balance,
         },
       ],
       { session }
@@ -1605,8 +1653,32 @@ exports.updatePurchase = async (req, res) => {
         .json({ message: "purchasedItems must be a non-empty array" });
     }
 
-    // Preserve original batch_number unless client explicitly changed it per-line
-    // We'll respect incoming.batch_number if provided, otherwise use existingPurchase.batch_number for new rows.
+    // 1. Derive or Generate Batch Number for this purchase
+    let finalBatchNumber = existingPurchase.purchasedItems.find(i => i.batch_number)?.batch_number;
+    if (!finalBatchNumber) {
+      finalBatchNumber = `BATCH-${Date.now()}-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+    }
+
+    // 2. Map batch_number and total_price to ALL incoming items to satisfy schema requirements
+    incoming.purchasedItems = incoming.purchasedItems.map(item => {
+      const qty = Number(item.purchaseQty || 0);
+      const cost = Number(item.unitCost || 0);
+
+      const updatedItem = {
+        ...item,
+        batch_number: item.batch_number || finalBatchNumber,
+        total_price: item.total_price || (qty * cost)
+      };
+
+      // Also ensure serialized items have it if they exist
+      if (updatedItem.isSerialized && Array.isArray(updatedItem.serializedItems)) {
+        updatedItem.serializedItems = updatedItem.serializedItems.map(si => ({
+          ...si,
+          batch_number: si.batch_number || updatedItem.batch_number
+        }));
+      }
+      return updatedItem;
+    });
 
     // Build serialized maps
     const oldSerializedMap = buildSerializedMap(
@@ -1866,34 +1938,7 @@ exports.updatePurchase = async (req, res) => {
 
     // 4) Non-serialized adjustments (create for increases; reduce FIFO for decreases; update price for zero-delta)
     for (const d of nonSerializedDeltas) {
-      // 1. Determine the final batch number for the new stock entry
-      let finalBatchNumber = null;
-
-      // A. Try to retrieve the batch number from the EXISTING ITEMS
-      // Since the batch_number is stored in purchasedItems array, find it from the existing purchase items.
-      // We use the batch number from the first item, as they should all be the same.
-      const existingItemWithBatch = existingPurchase.purchasedItems.find(
-        (item) => item.batch_number
-      );
-
-      if (existingItemWithBatch) {
-        // Found an existing batch number from the old purchase items
-        finalBatchNumber = existingItemWithBatch.batch_number;
-      }
-
-      // B. If no batch number exists (e.g., this is the first item ever in this purchase, or a new item is being added to an item set that previously had none)
-      if (!finalBatchNumber) {
-        // Generate a brand new batch number
-        const uniqueId = Math.random().toString(36).substring(2, 8);
-        finalBatchNumber = `BATCH-${Date.now()}-${uniqueId}`;
-
-        // CRITICAL: Since you generated a NEW batch number, you must update ALL items in this purchase
-        // to maintain the "one purchase, one batch" rule.
-        // NOTE: This must happen *before* the purchase document is updated/saved.
-
-        // You should iterate over all purchase items (existing and new incoming)
-        // and assign the new batch number, then save the main Purchase document.
-      }
+      // 1. We already have finalBatchNumber derived at the top
       const { oldLine, newLine, deltaQty } = d;
       if (deltaQty === 0) {
         // update price fields in NonSerializedStock rows belonging to this purchase only (if client changed pricing)

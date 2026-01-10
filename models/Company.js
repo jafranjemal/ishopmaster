@@ -14,6 +14,7 @@ const companySchema = new mongoose.Schema({
   tax_id: { type: String },  // Optional, for tax identification
   registration_number: { type: String },  // Optional, for legal purposes
   company_logo: { type: String },  // Optional, for legal purposes
+  company_logo_public_id: { type: String }, // Cloudinary Public ID
   company_fb_link: { type: String },  // Optional, for legal purposes
   company_instagram_link: { type: String },  // Optional, for legal purposes
   company_tiktok_link: { type: String },  // Optional, for legal purposes
@@ -111,6 +112,12 @@ const companySchema = new mongoose.Schema({
   invoice_footer_line_height: { type: Number, default: 1.0 },
   invoice_terms_align: { type: String, default: "left" },
 
+  // Cloudinary Configuration (Company Specific)
+  cloudinary_cloud_name: { type: String },
+  cloudinary_api_key: { type: String },
+  cloudinary_api_secret: { type: String }, // SERVER-SIDE ONLY - NEVER EXPOSE
+  cloudinary_upload_preset: { type: String },
+  cloudinary_folder: { type: String, default: "shop-erp" },
 });
 
 const Company = mongoose.model("Company", companySchema);

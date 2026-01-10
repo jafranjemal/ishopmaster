@@ -2,13 +2,13 @@ const express = require('express');
 const router = express.Router();
 const stockController = require('../controllers/stockController');
 
-// Route to create new stock entry
-router.post('/', stockController.createStock);
+// Route to create new stock entry (Deprecated - using purchase flow)
+// router.post('/', stockController.createStock);
 router.post('/adjust', stockController.adjustStock);
 
 
-// Route to update stock after sale
-router.put('/sale', stockController.updateStockOnSale);
+// Route to update stock after sale (Deprecated - integrated into sales)
+// router.put('/sale', stockController.updateStockOnSale);
 
 // Route to get total current stock value (unit cost * available qty)
 router.get('/current-stock-value', stockController.getCurrentStockValue);

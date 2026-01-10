@@ -5,6 +5,9 @@ const PhoneModelController = require('../controllers/PhoneModelController');
 // Create single or multiple phone models
 router.post('/', PhoneModelController.createPhoneModels);
 
+// Sync Master Registry (Automated Bootstrap)
+router.post('/sync-registry', PhoneModelController.syncMasterRegistry);
+
 // Get all phone models of a specific brand
 router.get('/brand/:brandId', PhoneModelController.getPhoneModelsByBrand);
 

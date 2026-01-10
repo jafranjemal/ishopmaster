@@ -83,6 +83,7 @@ const reportRoutes = require("./routes/reportRoutes");
 const itemVariantRoutes = require("./routes/itemVariantRoutes");
 const attributeRoutes = require("./routes/attributeRoutes");
 const expenseRoutes = require("./routes/expenseRoutes");
+const mediaRoutes = require("./routes/mediaRoutes");
 
 app.use('/api/items', productRoutes);
 app.use("/api/suppliers", supplierRoutes);
@@ -123,6 +124,7 @@ app.use("/api/reports", reportRoutes);
 app.use("/api/variants", itemVariantRoutes);
 app.use("/api/attributes", attributeRoutes);
 app.use("/api/expenses", expenseRoutes);
+app.use("/api/media", mediaRoutes);
 
 app.post('/api/print-barcodes', async (req, res) => {
   const { items } = req.body;

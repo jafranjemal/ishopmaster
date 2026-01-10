@@ -13,15 +13,26 @@ const stockSchema = new mongoose.Schema({
     unit_cost: { type: Number, required: true },
     unit: { type: String, required: true },
     selling_price: { type: Number, required: true },
-    profit_margin: { 
-        type: Number, 
-        required: false, 
-        default: function() {
+    profit_margin: {
+        type: Number,
+        required: false,
+        default: function () {
             return ((this.selling_price - this.unit_cost) / this.unit_cost) * 100;
-        } 
+        }
     }, // Profit margin calculated dynamically
     expiry_date: { type: Date }, // Optional: Expiry date for perishable goods
     adjustment_reason: { type: String }, // Reason for stock adjustment (if any)
 });
 
-module.exports = mongoose.model("Stock", stockSchema);
+// DEPRECATION GUARD: Prevents any new records from being created or updated in the legacy Stock model.
+stockSchema.pre('save', function (next) {
+    const error = new Error('CRITICAL: Stock model is DEPRECATED. Use SerializedStock or NonSerializedStock instead.');
+    next(error);
+});
+
+stockSchema.pre('findOneAndUpdate', function (next) {
+    const error = new Error('CRITICAL: Stock model is DEPRECATED. Use SerializedStock or NonSerializedStock instead.');
+    next(error);
+});
+
+module.exports = mongoose.model("LegacyStock_DO_NOT_USE", stockSchema);

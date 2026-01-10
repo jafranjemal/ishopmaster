@@ -1,7 +1,9 @@
 const mongoose = require("mongoose");
 
 const purchaseSchema = new mongoose.Schema({
-  supplier: { type: mongoose.Schema.Types.ObjectId, ref: "Supplier", required: true },
+  supplier: { type: mongoose.Schema.Types.ObjectId, ref: "Supplier" }, // Optional if it's a trade-in
+  customer: { type: mongoose.Schema.Types.ObjectId, ref: "Customer" }, // For trade-ins
+  purchase_type: { type: String, enum: ["Supplier", "Trade-In"], default: "Supplier" },
   referenceNumber: { type: String, unique: true, required: true },
   purchaseDate: { type: Date, default: Date.now },
   payment_type: { type: String, enum: ["Cash", "Credit", "Other"], },

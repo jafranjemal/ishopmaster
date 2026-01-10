@@ -239,24 +239,18 @@ exports.getCompanyProfile = async (req, res) => {
 
     // Construct the response data
     const profileData = {
-      company_name: company.company_name,
-      company_type: company.company_type,
-      email: company.email,
-      phone: company.phone,
-      address: company.address,
-      website: company.website,
-      company_logo: company.company_logo || "https://via.placeholder.com/100",
+      ...company.toObject(),
       accountsCount: accounts.length,
-      account_balance: accounts.reduce((total, account) => total + account.balance, 0), // Sum of all account balances
+      account_balance: accounts.reduce((total, account) => total + account.balance, 0),
       total_revenue: totalRevenueAmount,
       total_expenses: totalExpensesAmount,
       net_balance: totalRevenueAmount - totalExpensesAmount,
-      transactions: transactions.slice(0, 3).map((txn) => ({
+      transactions: transactions.slice(0, 5).map((txn) => ({
         date: txn.transaction_date,
         description: txn.reason,
         type: txn.transaction_type,
         amount: txn.amount,
-        status: txn.transaction_status || "Completed", // Assuming txn.transaction_status exists
+        status: txn.transaction_status || "Completed",
       })),
     };
 

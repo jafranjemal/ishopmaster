@@ -5,7 +5,7 @@ const mongoose = require("mongoose");
 // Create a new customer and associated account
 exports.createCustomer = async (req, res) => {
   try {
-    const { first_name, last_name, email, phone_number, address, customer_type, company_name, customer_image, company_tax_id } = req.body;
+    const { first_name, last_name, email, phone_number, address, customer_type, company_name, customer_image, company_tax_id, nic_number, id_front_image, id_back_image } = req.body;
 
     // Create the new customer
     const newCustomer = new Customer({
@@ -18,6 +18,9 @@ exports.createCustomer = async (req, res) => {
       company_name,
       customer_image,
       company_tax_id,
+      nic_number,
+      id_front_image,
+      id_back_image,
     });
 
     await newCustomer.save();

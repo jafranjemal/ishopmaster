@@ -27,13 +27,15 @@ const DeviceInspectionSchema = new mongoose.Schema({
     reportedIssues: [String],
     diagnosedIssues: [String],
     urgency: { type: String, enum: ['low', 'normal', 'high', 'urgent'] },
-    estimatedRepairTime: String
+    estimatedRepairTime: String,
+    isHighRisk: { type: Boolean, default: false } // Flag for high-risk repairs (e.g. unlocking)
   },
 
   photos: [{
-    type: String,
     url: String,
-    timestamp: Date
+    publicId: String,
+    timestamp: Date,
+    type: { type: String } // Fixed: Explicit definition to avoid Mongoose casting to [String]
   }],
 
   assessment: {

@@ -113,6 +113,7 @@ const serviceItemSchema = new Schema(
         enum: ["beginner", "intermediate", "advanced", "expert"],
         default: "intermediate"
       },
+      isHighRisk: { type: Boolean, default: false },
       estimatedTime: { type: Number }, // minutes
 
       workflow: {

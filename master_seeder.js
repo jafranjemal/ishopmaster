@@ -133,20 +133,9 @@ const seedMasterData = async (isScript = false, logCallback = null) => {
     await PhoneModel.deleteMany({}).session(session);
     await Item.deleteMany({}).session(session);
 
-    const deviceSpecs = {
-      'iPhone 6': { ram: '1GB', storage: '16/64/128GB', display: '4.7"', rear: '8MP', batt: 1810 },
-      'iPhone 7': { ram: '2GB', storage: '32/128/256GB', display: '4.7"', rear: '12MP', batt: 1960 },
-      'iPhone X': { ram: '3GB', storage: '64/256GB', display: '5.8"', rear: '12MP Dual', batt: 2716 },
-      'iPhone 11': { ram: '4GB', storage: '64/128/256GB', display: '6.1"', rear: '12MP', batt: 3110 },
-      'iPhone 12': { ram: '4GB', storage: '64/128/256GB', display: '6.1"', rear: '12MP', batt: 2815 },
-      'iPhone 13': { ram: '4GB', storage: '128/256/512GB', display: '6.1"', rear: '12MP', batt: 3227 },
-      'iPhone 14': { ram: '6GB', storage: '128/256/512GB', display: '6.1"', rear: '12MP', batt: 3279 },
-      'iPhone 15 Pro': { ram: '8GB', storage: '128/256/512/1TB', display: '6.1"', rear: '48MP', batt: 3274 },
-      'iPhone 16 Pro Max': { ram: '8GB', storage: '256/512/1TB', display: '6.9"', rear: '48MP', batt: 4685 },
-      'iPhone 17 Pro Max': { ram: '12GB', storage: '256/512GB/1TB/2TB', display: '6.9"', rear: '48MP Quad', batt: 4685 }
-    };
-
-    const modelsData = Object.keys(deviceSpecs).map(name => ({ brand: 'Apple', name }));
+    const { DEVICE_SPECS, getModelsList } = require('./data/DeviceMasterData');
+    const deviceSpecs = DEVICE_SPECS;
+    const modelsData = getModelsList();
 
     const modelDocs = [];
     const itemsToSeed = [];
@@ -158,13 +147,14 @@ const seedMasterData = async (isScript = false, logCallback = null) => {
       modelDocs.push({
         model_name: modelDef.name,
         brandId: brandDoc._id,
+        colors: deviceSpecs[modelDef.name].colors,
         description: `Specs: ${JSON.stringify(deviceSpecs[modelDef.name])}`
       });
     }
 
     // Insert Phone Models FIRST to get IDs
     modelsArr = await PhoneModel.insertMany(modelDocs, { session });
-    log(`Seeded ${modelsArr.length} phone models.`, 'success');
+    log(`Seeded ${modelsArr.length} phone models with colors.`, 'success');
 
     // Create Items using the inserted models
     for (const modelDoc of modelsArr) {

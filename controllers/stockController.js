@@ -1,4 +1,4 @@
-const Stock = require("../models/Stock");
+// No legacy Stock model needed. Using SerializedStock and NonSerializedStock.
 const Item = require("../models/Items");
 const mongoose = require("mongoose");
 const moment = require("moment"); // To calculate the stock age (optional)
@@ -9,6 +9,9 @@ const ItemVariant = require("../models/ItemVariantSchema");
 const StockLedger = require("../models/StockLedger");
 const Purchase = require("../models/Purchase");
 const SalesInvoice = require("../models/SalesInvoice");
+const Account = require("../models/Account");
+const Transaction = require("../models/Transaction");
+const AuditLog = require("../models/AuditLog");
 
 exports.getItemStockDetails = async (req, res) => {
   try {
@@ -109,112 +112,24 @@ exports.getItemStockDetails = async (req, res) => {
   }
 };
 
-exports.createStock = async (req, res) => {
-  try {
-    const {
-      item_id,
-      batch_number,
-      purchase_qty,
-      unitCost,
-      sellingPrice,
-      purchaseDate,
-    } = req.body;
-
-    // Check if the item exists
-    const item = await Item.findById(item_id);
-    if (!item) {
-      return res.status(404).json({ message: "Item not found" });
-    }
-
-    // Find the existing stock of the item across all batches to calculate the beforePurchaseAvailable_qty
-    const existingStocks = await Stock.find({ item_id: item_id });
-    let totalBeforePurchaseQty = 0;
-
-    existingStocks.forEach((stock) => {
-      totalBeforePurchaseQty += stock.availableQty;
-    });
-
-    // Create new stock record
-    const stock = new Stock({
-      item_id,
-      batch_number,
-      purchase_qty,
-      availableQty: purchase_qty, // Set available quantity to the purchased quantity
-      unitCost,
-      sellingPrice,
-      purchaseDate,
-      beforePurchaseAvailable_qty: totalBeforePurchaseQty, // Set before purchase stock
-    });
-
-    // Save the stock record
-    await stock.save();
-
-    return res.status(201).json(stock);
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ message: "Error creating stock" });
-  }
-};
+// exports.createStock = ... // Legacy, officially using Purchase/Adjustment
 // Get stock of an item by its ID
-exports.getStockByItem = async (req, res) => {
-  try {
-    const itemId = req.params.item_id;
-
-    const stocks = await Stock.find({ item_id: itemId });
-    if (stocks.length === 0) {
-      return res.status(404).json({ message: "No stock found for this item" });
-    }
-
-    return res.status(200).json(stocks);
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ message: "Error fetching stock" });
-  }
-};
+// exports.getStockByItem = ... // Legacy
 
 // Update stock quantity when items are sold
-exports.updateStockOnSale = async (req, res) => {
-  try {
-    const { item_id, soldQty, batch_number } = req.body;
-
-    // Find the stock entry for the given item and batch
-    const stock = await Stock.findOne({ item_id, batch_number });
-    if (!stock) {
-      return res
-        .status(404)
-        .json({ message: "Stock not found for this batch" });
-    }
-
-    // Ensure there is enough stock available
-    if (stock.availableQty < soldQty) {
-      return res.status(400).json({ message: "Not enough stock available" });
-    }
-
-    // Update the available quantity after the sale
-    stock.availableQty -= soldQty;
-    await stock.save();
-
-    return res
-      .status(200)
-      .json({ message: "Stock updated successfully", stock });
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ message: "Error updating stock" });
-  }
-};
+// exports.updateStockOnSale = ... // Legacy, using Sales-integrated stock reduction now
 
 // Get the current stock value (unit cost * available qty) of all items
 exports.getCurrentStockValue = async (req, res) => {
   try {
-    const stocks = await Stock.find();
-    if (!stocks || stocks.length === 0) {
-      return res.status(404).json({ message: "No stocks available" });
-    }
+    const [serialized, nonSerialized] = await Promise.all([
+      SerializedStock.find({ status: "Available" }),
+      NonSerializedStock.find({ status: "Available" })
+    ]);
 
     let totalValue = 0;
-    stocks.forEach((stock) => {
-      totalValue += stock.availableQty * stock.unitCost;
-    });
+    serialized.forEach(s => totalValue += (s.unitCost || 0));
+    nonSerialized.forEach(n => totalValue += (n.availableQty * (n.unitCost || 0)));
 
     return res.status(200).json({ totalStockValue: totalValue });
   } catch (err) {
@@ -228,11 +143,14 @@ exports.getStockByBatch = async (req, res) => {
   try {
     const { item_id, batch_number } = req.params;
 
-    const stock = await Stock.findOne({ item_id, batch_number });
+    const [serialized, nonSerialized] = await Promise.all([
+      SerializedStock.findOne({ item_id, batch_number }),
+      NonSerializedStock.findOne({ item_id, batch_number })
+    ]);
+
+    const stock = serialized || nonSerialized;
     if (!stock) {
-      return res
-        .status(404)
-        .json({ message: "Stock not found for this batch" });
+      return res.status(404).json({ message: "Stock not found for this batch" });
     }
 
     return res.status(200).json(stock);
@@ -242,168 +160,75 @@ exports.getStockByBatch = async (req, res) => {
   }
 };
 
-exports.getAllItemsWithStock_old = async (req, res) => {
-  try {
-    // Fetch all items
-    const items = await Item.find();
-
-    // Fetch stock details for each item including batch-wise stock details
-    const stocks = await Stock.aggregate([
-      { $match: { item_id: { $in: items.map((item) => item._id) } } }, // Match stocks for these items
-      {
-        $group: {
-          _id: "$item_id",
-          batches: {
-            $push: {
-              batch_number: "$batch_number",
-              availableQty: "$availableQty",
-              purchaseDate: "$purchaseDate",
-              unitCost: "$unitCost",
-              sellingPrice: "$sellingPrice",
-            },
-          },
-          totalStock: { $sum: "$availableQty" }, // Sum of all available stock
-          lastUnitCost: { $last: "$unitCost" }, // Get the unitCost of the latest purchase
-          lastSellingPrice: { $last: "$sellingPrice" }, // Get the unitCost of the latest purchase
-          serialized: { $last: "$serialized" }, // Get the unitCost of the latest purchase
-        },
-      },
-    ]);
-
-    // Map the stock details to the corresponding items and calculate the age of stock
-    const result = items.map((item) => {
-      const stock = stocks.find(
-        (stock) => stock._id.toString() === item._id.toString()
-      );
-
-      // If stock data exists for the item, format the response
-      if (stock) {
-        const batchDetails = stock.batches.map((batch) => {
-          const ageInDays = moment().diff(moment(batch.purchaseDate), "days"); // Calculate age in days
-          return {
-            ...batch,
-            ageInDays: ageInDays, // Add age in days for each batch
-            purchaseDate: moment(batch.purchaseDate).format("YYYY-MM-DD"), // Format date for readability
-          };
-        });
-
-        return {
-          ...item.toObject(),
-          totalStock: stock.totalStock,
-          batches: batchDetails,
-          lastUnitCost: stock.lastUnitCost, // Add last entered unitCost
-          lastSellingPrice: stock.lastSellingPrice, // Add last entered unitCost
-          // Add last entered unitCost
-        };
-      }
-
-      // If no stock data is found for this item
-      return {
-        ...item.toObject(),
-        totalStock: 0,
-        lastUnitCost: 0, // Add last entered unitCost
-        batches: [],
-        lastSellingPrice: 0, // Add last entered unitCost
-        // Add last entered unitCost
-      };
-    });
-
-    res.json(result);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Error fetching items and stock" });
-  }
-};
+// exports.getAllItemsWithStock_old = ... // Deprecated
 
 exports.getAllItemsWithStock = async (req, res) => {
   try {
-    const result = await Stock.aggregate([
-      {
-        $match: { status: "Available" }
-      },
-      {
-        $lookup: {
-          from: "items",
-          localField: "item_id",
-          foreignField: "_id",
-          as: "itemDetails",
-        },
-      },
-      {
-        $unwind: {
-          path: "$itemDetails",
-          preserveNullAndEmptyArrays: false, // Ensure items without stock are still included
-        },
-      },
-      {
-        $lookup: {
-          from: "purchases",
-          localField: "purchase_id",
-          foreignField: "_id",
-          as: "purchaseDetails",
-        },
-      },
-      {
-        $unwind: {
-          path: "$purchaseDetails",
-          preserveNullAndEmptyArrays: true,
-        },
-      },
-      {
-        $addFields: {
-          serialized: { $ifNull: ["$itemDetails.serialized", false] }, // Default serialized to false if not found
-        },
-      },
-      {
-        $group: {
-          _id: "$item_id",
-          batches: {
-            $push: {
-              batch_number: "$batch_number",
-              availableQty: "$available_qty",
-              purchaseDate: "$purchase_date",
-              unitCost: "$unit_cost",
-              sellingPrice: "$selling_price",
-              purchaseId: "$purchase_id",
-              invoiceNumber: { $ifNull: ["$purchaseDetails.referenceNumber", ""] },
+    const [nonSerialized, serialized] = await Promise.all([
+      NonSerializedStock.aggregate([
+        { $match: { status: "Available", availableQty: { $gt: 0 } } },
+        { $lookup: { from: "items", localField: "item_id", foreignField: "_id", as: "itemDetails" } },
+        { $unwind: "$itemDetails" },
+        { $lookup: { from: "purchases", localField: "purchase_id", foreignField: "_id", as: "purchaseDetails" } },
+        { $unwind: { path: "$purchaseDetails", preserveNullAndEmptyArrays: true } },
+        {
+          $group: {
+            _id: "$item_id",
+            totalStock: { $sum: "$availableQty" },
+            lastUnitCost: { $last: "$unitCost" },
+            lastSellingPrice: { $last: "$sellingPrice" },
+            maxPurchaseDate: { $max: "$purchaseDate" },
+            batches: {
+              $push: {
+                batch_number: "$batch_number",
+                availableQty: "$availableQty",
+                purchaseDate: "$purchaseDate",
+                unitCost: "$unitCost",
+                sellingPrice: "$sellingPrice",
+                invoiceNumber: { $ifNull: ["$purchaseDetails.referenceNumber", ""] }
+              }
             },
-          },
-          totalStock: { $sum: "$available_qty" },
-          lastUnitCost: { $last: "$unit_cost" },
-          lastSellingPrice: { $last: "$selling_price" },
-          serialized: { $last: "$serialized" },
-          maxPurchaseDate: { $max: "$purchase_date" },
-          itemDetails: { $first: "$itemDetails" },
-        },
-      },
-      {
-        $sort: { maxPurchaseDate: -1 }
-      },
-      {
-        $project: {
-          _id: 0,
-          item_id: "$_id",
-          totalStock: 1,
-          lastUnitCost: 1,
-          lastSellingPrice: 1,
-          serialized: 1,
-          batches: 1,
-          itemDetails: 1,
-          maxPurchaseDate: 1,
-        },
-      },
+            itemDetails: { $first: "$itemDetails" }
+          }
+        }
+      ]),
+      SerializedStock.aggregate([
+        { $match: { status: "Available" } },
+        { $lookup: { from: "items", localField: "item_id", foreignField: "_id", as: "itemDetails" } },
+        { $unwind: "$itemDetails" },
+        { $lookup: { from: "purchases", localField: "purchase_id", foreignField: "_id", as: "purchaseDetails" } },
+        { $unwind: { path: "$purchaseDetails", preserveNullAndEmptyArrays: true } },
+        {
+          $group: {
+            _id: "$item_id",
+            totalStock: { $sum: 1 },
+            lastUnitCost: { $last: "$unitCost" },
+            lastSellingPrice: { $last: "$sellingPrice" },
+            maxPurchaseDate: { $max: "$purchaseDate" },
+            batches: {
+              $push: {
+                batch_number: "$batch_number",
+                serialNumber: "$serialNumber",
+                availableQty: 1,
+                purchaseDate: "$purchaseDate",
+                unitCost: "$unitCost",
+                sellingPrice: "$sellingPrice",
+                invoiceNumber: { $ifNull: ["$purchaseDetails.referenceNumber", ""] }
+              }
+            },
+            itemDetails: { $first: "$itemDetails" }
+          }
+        }
+      ])
     ]);
 
-    // Format the result
-    const formattedResult = result.map((item) => {
-      const batchDetails = item.batches.map((batch) => {
-        const ageInDays = moment().diff(moment(batch.purchaseDate), "days");
-        return {
-          ...batch,
-          ageInDays: ageInDays,
-          purchaseDate: moment(batch.purchaseDate).format("YYYY-MM-DD"),
-        };
-      });
+    // Merge results from both models
+    const merged = [...nonSerialized, ...serialized].map(item => {
+      const batchDetails = item.batches.map(batch => ({
+        ...batch,
+        ageInDays: moment().diff(moment(batch.purchaseDate), "days"),
+        purchaseDate: moment(batch.purchaseDate).format("YYYY-MM-DD")
+      }));
 
       return {
         ...item.itemDetails,
@@ -411,16 +236,14 @@ exports.getAllItemsWithStock = async (req, res) => {
         batches: batchDetails,
         lastUnitCost: item.lastUnitCost,
         lastSellingPrice: item.lastSellingPrice,
-        serialized: item.serialized,
+        serialized: item.itemDetails.serialized
       };
     });
 
-    res.json(formattedResult);
+    res.json(merged.sort((a, b) => new Date(b.maxPurchaseDate) - new Date(a.maxPurchaseDate)));
   } catch (err) {
     console.error(err);
-    res
-      .status(500)
-      .json({ message: "Error fetching items and stock", error: err.message });
+    res.status(500).json({ message: "Error fetching items and stock", error: err.message });
   }
 };
 
@@ -433,22 +256,20 @@ exports.getStockForItem = async (req, res) => {
       throw new Error("Invalid item_id");
     }
 
-    // Fetch stock data for the specific item
-    const stock = await Stock.aggregate([
-      { $match: { item_id: new mongoose.Types.ObjectId(item_id) } },
-      {
-        $group: {
-          _id: "$item_id",
-          totalStock: { $sum: "$availableQty" },
-        },
-      },
+    // Fetch stock data from both models
+    const [serializedStock, nonSerializedStock] = await Promise.all([
+      SerializedStock.aggregate([
+        { $match: { item_id: new mongoose.Types.ObjectId(item_id), status: "Available" } },
+        { $group: { _id: "$item_id", total: { $sum: 1 } } }
+      ]),
+      NonSerializedStock.aggregate([
+        { $match: { item_id: new mongoose.Types.ObjectId(item_id), status: "Available" } },
+        { $group: { _id: "$item_id", total: { $sum: "$availableQty" } } }
+      ])
     ]);
 
-    if (!stock.length) {
-      return res.status(404).json({ message: "No stock found for this item" });
-    }
-
-    res.json({ item_id, totalStock: stock[0].totalStock });
+    const totalStock = (serializedStock[0]?.total || 0) + (nonSerializedStock[0]?.total || 0);
+    res.json({ item_id, totalStock });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Error fetching stock for item" });
@@ -456,18 +277,7 @@ exports.getStockForItem = async (req, res) => {
 };
 
 // Controller to get stock by purchase ID
-exports.getStockByPurchaseId_old = async (req, res) => {
-  try {
-    const { purchaseId } = req.params;
-    const stockData = await Stock.find({ purchase_id: purchaseId })
-      .populate("item_id", "itemName") // Assuming "Item" has a "name" field
-      .exec();
-
-    res.status(200).json(stockData);
-  } catch (error) {
-    res.status(500).json({ message: "Error fetching stock data", error });
-  }
-};
+// exports.getStockByPurchaseId_old = ... // Legacy
 
 // Controller to get stock by purchase ID
 exports.getStockByPurchaseId = async (req, res) => {
@@ -481,14 +291,14 @@ exports.getStockByPurchaseId = async (req, res) => {
         item_id: 1,
         batch_number: 1,
         purchaseDate: 1,
-        purchase_qty: 1,
+        purchaseQty: 1,
         availableQty: 1,
         soldQty: 1,
         adjustmentQty: 1,
         unitCost: 1,
         sellingPrice: 1,
-        expiry_date: 1,
-        adjustment_reason: 1,
+        expiryDate: 1,
+        adjustmentReason: 1,
       }
     );
 
@@ -1932,7 +1742,7 @@ exports.adjustStock = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const { itemId, adjustmentType, adjustmentQty, reason, targetSerialNumbers, newSerialNumbers, unitCost, sellingPrice, supplierId } = req.body;
+    const { itemId, variantId, adjustmentType, adjustmentQty, reason, targetSerialNumbers, newSerialNumbers, unitCost, sellingPrice, supplierId } = req.body;
     // adjustmentQty is treated as absolute count for NonSerialized (or difference?)
     // Modal UI sends "Qty" as "Difference" (Action Qty).
     // targetSerialNumbers: ["SN1", "SN2"] (for Deduct)
@@ -1959,11 +1769,37 @@ exports.adjustStock = async (req, res) => {
           purchaseQty: adjustmentQty || newSerialNumbers?.length || 1,
           unitCost: parseFloat(unitCost) || 0,
           sellingPrice: parseFloat(sellingPrice) || 0,
+          total_price: (parseFloat(unitCost) || 0) * (adjustmentQty || newSerialNumbers?.length || 1),
           batch_number: "ADJ-" + moment().format("YYMMDD"),
           isSerialized: item.serialized
         }]
       }], { session });
       purchaseId = purchaseEntry[0]._id;
+
+      // --- FINANCIAL INTEGRATION: Update Supplier Account ---
+      const partyAcc = await Account.findOne({
+        account_owner_type: "Supplier",
+        related_party_id: supplierId,
+      }).session(session);
+
+      if (partyAcc) {
+        const totalValue = (parseFloat(unitCost) || 0) * (adjustmentQty || newSerialNumbers?.length || 0);
+        partyAcc.balance -= totalValue;
+        await partyAcc.save({ session });
+
+        await Transaction.create(
+          [
+            {
+              account_id: partyAcc._id,
+              amount: totalValue * -1,
+              transaction_type: "Withdrawal",
+              reason: `Stock Adjustment (${reason}): ${purchaseId}`,
+              balance_after_transaction: partyAcc.balance,
+            },
+          ],
+          { session }
+        );
+      }
     }
 
     if (item.serialized) {
@@ -2030,7 +1866,7 @@ exports.adjustStock = async (req, res) => {
                 sellingPrice: entry.sellingPrice || parseFloat(sellingPrice) || item.pricing?.sellingPrice || 0,
                 purchaseDate: new Date(),
                 purchase_id: purchaseId, // Use the real or placeholder ID
-                condition: "Brand New"
+                condition: entry.condition || item.condition || "Brand New"
               }], { session });
             }
 
@@ -2047,6 +1883,7 @@ exports.adjustStock = async (req, res) => {
               memo: `Adjustment: ${reason}`,
               opening_balance: previousLedger?.closing_balance || 0,
               closing_balance: (previousLedger?.closing_balance || 0) + 1,
+              condition: entry.condition || "Brand New"
             }], { session });
           }
         } else {
@@ -2068,6 +1905,8 @@ exports.adjustStock = async (req, res) => {
           batch.availableQty -= deduct;
           batch.adjustmentQty += deduct;
           batch.adjustment_reason = reason;
+          // Ensure condition exists to satisfy schema validation for older records
+          if (!batch.condition) batch.condition = "Brand New";
           await batch.save({ session });
           remaining -= deduct;
         }
@@ -2094,20 +1933,24 @@ exports.adjustStock = async (req, res) => {
         // Add
         // Update Item Master's Last Cost/Price if provided
         if (unitCost || sellingPrice) {
-          if (unitCost) item.lastUnitCost = parseFloat(unitCost);
-          // Updating item.pricing might be complex if it's nested, sticking to stock record for now
-          // But usually we want to reflect this in the Item Master for future reference
+          if (unitCost) item.costPrice = parseFloat(unitCost);
+          if (sellingPrice) {
+            if (!item.pricing) item.pricing = {};
+            item.pricing.sellingPrice = parseFloat(sellingPrice);
+          }
           await item.save({ session });
         }
 
         await NonSerializedStock.create([{
           item_id: itemId,
+          variant_id: variantId || null,
           batch_number: "ADJ-" + moment().format("YYMMDD"),
-          purchase_qty: qty,
+          purchaseQty: qty,
           availableQty: qty,
           // PRIORITIZE: Global Input > Item Last Known
           unitCost: parseFloat(unitCost) || item.lastUnitCost || 0,
           sellingPrice: parseFloat(sellingPrice) || item.pricing?.sellingPrice || 0,
+          condition: req.body.condition || item.condition || "Brand New",
           purchaseDate: new Date(),
           purchase_id: purchaseId, // Use the real or placeholder ID
         }], { session });
@@ -2127,6 +1970,13 @@ exports.adjustStock = async (req, res) => {
         }], { session });
       }
     }
+
+    await AuditLog.create([{
+      action: "STOCK_ADJUSTED",
+      performedBy: req.user?._id,
+      description: `Stock adjusted for item ${item.itemName} (${adjustmentType}): ${reason}`,
+      after: { itemId, adjustmentType, adjustmentQty, reason }
+    }], { session });
 
     await session.commitTransaction();
     res.json({ message: "Stock adjusted successfully" });

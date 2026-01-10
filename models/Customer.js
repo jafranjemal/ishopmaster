@@ -39,6 +39,11 @@ const customerSchema = new mongoose.Schema({
   company_name: { type: String },  // Optional, if customer is a business
   customer_image: { type: String },  // Optional, if customer is a business
   company_tax_id: { type: String },  // Optional, if customer is a business
+  nic_number: { type: String },        // National Identity Card number
+  id_front_image: { type: String },    // URL to ID front
+  id_front_image_public_id: { type: String }, // Cloudinary Public ID
+  id_back_image: { type: String },     // URL to ID back
+  id_back_image_public_id: { type: String }, // Cloudinary Public ID
   creditLimit: { type: Number, default: 0 },
   created_at: { type: Date, default: Date.now },
   updated_at: { type: Date, default: Date.now },

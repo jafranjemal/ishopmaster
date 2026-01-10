@@ -5,6 +5,7 @@ const ItemSchema = new mongoose.Schema(
     // Common Fields for All Items
     itemName: { type: String, required: true, unique: true }, // Item Name
     itemImage: { type: String }, // Image URL
+    itemImagePublicId: { type: String }, // Cloudinary Public ID
     units: { type: String, default: "pcs" },
     alertQuantity: { type: String, default: "0" },
     notForSelling: { type: Boolean, default: false },
@@ -15,7 +16,7 @@ const ItemSchema = new mongoose.Schema(
     }, // Item Type
     itemDescription: { type: String }, // Optional description
     manufacturer: { type: String }, // Manufacturer name
-    phoneModelId: { type: mongoose.Schema.Types.ObjectId, ref: "PhoneModel" , default: null}, // Link to PhoneModel
+    phoneModelId: { type: mongoose.Schema.Types.ObjectId, ref: "PhoneModel", default: null }, // Link to PhoneModel
     modelName: { type: String }, // Model name (Text fallback/cache)
     barcode: { type: String, unique: true }, // Unique barcode (if applicable)
 
