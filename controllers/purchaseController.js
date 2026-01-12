@@ -301,6 +301,10 @@ exports.createPurchase = async (req, res) => {
   try {
     const data = req.body;
 
+    // SANITIZATION: Handle empty strings for ObjectIds to prevent CastError
+    if (data.customer === "") data.customer = null;
+    if (data.supplier === "") data.supplier = null;
+
     console.log("🔥 createPurchase DATA:", data);
 
     // Force status to "Pending Verification" for stock integrity protocol
