@@ -595,6 +595,9 @@ exports.createPurchase = async (req, res) => {
         });
       }
 
+
+
+
       const readableMessage = formattedErrors
         .map((e) => `${e.field}: ${e.message}`)
         .join("; ");
@@ -605,6 +608,14 @@ exports.createPurchase = async (req, res) => {
         message: readableMessage,
         details: formattedErrors,
         ...(process.env.NODE_ENV === "development" && { stack: err.stack }),
+      });
+    }
+
+    if (err.name === "CastError") {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid ID format for ${err.path}: ${err.value}`,
+        error: err.message
       });
     }
 
