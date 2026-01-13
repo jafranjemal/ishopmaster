@@ -28,7 +28,7 @@ const WarrantySchema = new mongoose.Schema({
 
 async function generateWarrantyId() {
     const last = await this.constructor.findOne().sort("-createdAt");
-    const count = last ? parseInt(last.warranty_id.split("-")[1]) + 1 : 1;
+    const count = last && last.warranty_id ? parseInt(last.warranty_id.split("-")[1]) + 1 : 1;
     return `WRNTY-${String(count).padStart(8, "0")}`;
 }
 
