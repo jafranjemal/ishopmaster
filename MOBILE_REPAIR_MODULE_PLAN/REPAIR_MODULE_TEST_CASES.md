@@ -751,6 +751,53 @@ const auditRecords = await repair_audit_log.find({
 assert.lengthOf(auditRecords, 3); // Creation, supervisor assignment, allocation attempt
 ```
 
+## TEST CATEGORY: QUALITY TIER SYSTEM
+
+### QT-001: Multi-Tier Quotation Generation
+**Description:** Generate quotation with multiple quality options
+**Preconditions:** Service template with OEM and Aftermarket pricing
+**Test Steps:**
+1. Create repair job service
+2. Fetch available pricing options for model
+3. Verify multiple tiers (OEM, AFTERMARKET) are returned
+4. Select AFTERMARKET tier
+5. Verify job_service.selected_quality_tier_id is set
+
+**Expected Results:**
+- Multiple tier options returned with correct pricing
+- Selected tier locked after selection
+- bundlePrice matches tier definition
+
+### QT-002: Part Substitution (Cross-Tier)
+**Description:** Substitute OEM part with Aftermarket part
+**Preconditions:** Job approved for OEM tier, OEM part out of stock
+**Test Steps:**
+1. Attempt part allocation for OEM tier
+2. System reports stock-out
+3. Offer Aftermarket alternative with approval
+4. Customer approves substitution
+5. Update job_service pricing and job_part.actual_quality_tier_id
+
+**Expected Results:**
+- Substitution requires customer approval
+- actual_quality_tier_id = AFTERMARKET
+- tier_change_reason = "OEM_OUT_OF_STOCK"
+- Price adjusted to AFTERMARKET bundle price
+
+### QT-003: Tier-Based Warranty Recalculation
+**Description:** Verify warranty duration based on selected tier
+**Preconditions:** OEM tier (1.0 multiplier), Generic tier (0.5 multiplier)
+**Test Steps:**
+1. Create and complete OEM job
+2. Verify warranty expiry = 365 days
+3. Create and complete Generic job (same service)
+4. Verify warranty expiry = 182 days (0.5 * 365)
+
+**Expected Results:**
+- Warranty duration calculated using tier multiplier
+- Expiry date stored correctly in job status
+- Audit recorded with multiplier applied
+
 ## TEST EXECUTION MATRIX
 
 | Test Category | Test Count | Automation | Frequency | Criticality |

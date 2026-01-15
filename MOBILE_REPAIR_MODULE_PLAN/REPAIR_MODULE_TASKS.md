@@ -3,17 +3,22 @@
 
 ## IMPLEMENTATION PHASES & TASK ORDER
 
+### Phase 0: System Prerequisites
+```markdown
+RM-000: Create repair_part_quality_tier Model
+```
+
 ### Phase 1: Domain Model Implementation (Week 1-2)
 ```markdown
 RM-001: Create repair_service_category Model
 RM-002: Create repair_service_template Model
 RM-003: Create repair_service_brand_config Model
-RM-004: Create repair_service_model_pricing Model
-RM-005: Create repair_service_required_part Model
+RM-004: Create repair_service_model_pricing Model (with Quality Tiers)
+RM-005: Create repair_service_required_part Model (with Quality Tiers)
 RM-006: Create repair_customer_device Model
 RM-007: Create repair_job Model
-RM-008: Create repair_job_service Model
-RM-009: Create repair_job_part Model
+RM-008: Create repair_job_service Model (with Tier Selection)
+RM-009: Create repair_job_part Model (with Tier Tracking)
 RM-010: Create repair_part_allocation Model
 RM-011: Create repair_technician_commission_rule Model
 RM-012: Create repair_system_settings Model
@@ -50,11 +55,27 @@ RM-030: Integrate with Existing Inventory Models
 RM-031: Implement Reference-Only Coupling
 RM-032: Create Comprehensive Test Suite
 RM-033: Implement Data Migration Scripts
-RM-034: Implement Performance Optimization
-RM-035: Implement Security Controls
+```
+
+### Phase 5: Enterprise Patterns (Week 7)
+```markdown
+RM-034: Implement Event Sourcing Infrastructure
+RM-035: Implement CQRS Read Model Projections
+RM-036: Implement RepairJobApprovalSaga Coordinator
+RM-037: Implement Idempotency and Concurrency Controls
+RM-038: Implement Performance Optimization
+RM-039: Implement Security Controls
 ```
 
 ## DETAILED TASK BREAKDOWN
+
+### RM-000: Create repair_part_quality_tier Model
+**Description:** Implement quality tiers (OEM, Aftermarket, Generic) with warranty multipliers
+**Dependencies:** None
+**Preconditions:** Database connection available
+**Failure Risks:** Tier code duplication
+**Success Criteria:** Schema created with multipliers and tier codes
+**Validation:** Test tier creation with various multipliers
 
 ### RM-001: Create repair_service_category Model
 **Description:** Implement service category schema with hierarchical support
@@ -81,20 +102,20 @@ RM-035: Implement Security Controls
 **Validation:** Test brand config creation and uniqueness enforcement
 
 ### RM-004: Create repair_service_model_pricing Model
-**Description:** Implement sellable service pricing schema
-**Dependencies:** RM-003
-**Preconditions:** repair_service_brand_config exists
-**Failure Risks:** Invalid pricing calculations
-**Success Criteria:** Schema with snapshot capability and validation
-**Validation:** Test pricing creation and snapshot functionality
+**Description:** Implement sellable service pricing schema with Quality Tier support
+**Dependencies:** RM-003, RM-000
+**Preconditions:** repair_service_brand_config and repair_part_quality_tier exist
+**Failure Risks:** Duplicate (service, model, tier) combinations
+**Success Criteria:** Schema with qualityTierId, bundlePrice, and unique constraints
+**Validation:** Test tiered pricing creation for same model
 
 ### RM-005: Create repair_service_required_part Model
-**Description:** Implement BOM rules and part requirements
-**Dependencies:** RM-004
-**Preconditions:** repair_service_model_pricing exists
-**Failure Risks:** Invalid part compatibility rules
-**Success Criteria:** Schema with validation rules and alternatives
-**Validation:** Test part requirement creation and compatibility validation
+**Description:** Implement BOM rules and part requirements linked to Quality Tiers
+**Dependencies:** RM-004, RM-000
+**Preconditions:** repair_service_model_pricing and repair_part_quality_tier exist
+**Failure Risks:** Invalid tier-part mapping
+**Success Criteria:** Schema with qualityTierId and validation rules
+**Validation:** Test part filter logic by quality tier
 
 ### RM-006: Create repair_customer_device Model
 **Description:** Implement customer device tracking with governance
@@ -113,20 +134,20 @@ RM-035: Implement Security Controls
 **Validation:** Test job creation with different risk and legal hold states
 
 ### RM-008: Create repair_job_service Model
-**Description:** Implement service instance tracking
-**Dependencies:** RM-007, RM-004
-**Preconditions:** repair_job and repair_service_model_pricing exist
-**Failure Risks:** Invalid service snapshot creation
-**Success Criteria:** Schema with immutable snapshots and status tracking
-**Validation:** Test service instance creation and snapshot immutability
+**Description:** Implement service instance tracking with selected Quality Tier
+**Dependencies:** RM-007, RM-004, RM-000
+**Preconditions:** repair_job, repair_service_model_pricing, and repair_part_quality_tier exist
+**Failure Risks:** Invalid tier selection snapshot
+**Success Criteria:** Schema with immutable snapshots and selectedQualityTierId
+**Validation:** Test service creation with quality tier validation
 
 ### RM-009: Create repair_job_part Model
-**Description:** Implement parts consumption tracking
-**Dependencies:** RM-008
-**Preconditions:** repair_job_service exists
-**Failure Risks:** Invalid cost snapshotting
-**Success Criteria:** Schema with allocation references and financial tracking
-**Validation:** Test part consumption with cost snapshot verification
+**Description:** Implement parts consumption tracking with actual Quality Tier used
+**Dependencies:** RM-008, RM-000
+**Preconditions:** repair_job_service and repair_part_quality_tier exist
+**Failure Risks:** Tier change reason missing on substitution
+**Success Criteria:** Schema with actualQualityTierId and tierChangeReason
+**Validation:** Test part consumption with cross-tier substitution tracking
 
 ### RM-010: Create repair_part_allocation Model
 **Description:** Implement concrete inventory allocation
@@ -338,18 +359,22 @@ RM-021 ← RM-007, RM-019
 RM-022 ← RM-019, RM-020, RM-021
 RM-023 ← RM-013, All schemas
 
-Phase 3: Financial & Correction Systems
-RM-024 ← RM-010, RM-018
-RM-025 ← RM-017, RM-018
-RM-026 ← All previous
-RM-027 ← RM-010, RM-016
-
 Phase 4: Integration & Testing
 RM-028 ← All implementation
 RM-029 ← All schemas
-RM-030 ← All implementation
-RM-031 ← All implementation
-```
+RM-030 ← RM-010, RM-016
+RM-031 ← RM-030
+RM-032 ← All implementation
+RM-033 ← All schemas
+
+Phase 5: Enterprise Patterns
+RM-034 ← All models, RM-023
+RM-035 ← RM-034
+RM-036 ← RM-034, RM-017, RM-018
+RM-037 ← All previous
+RM-038 ← RM-035
+RM-039 ← All implementation
+
 
 ## PRECONDITIONS MATRIX
 

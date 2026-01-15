@@ -119,10 +119,16 @@ This document provides a complete backend specification for the Mobile Repair Mo
   _id: ObjectId,
   serviceBrandConfig: { type: ObjectId, ref: 'ServiceBrandConfigs', required: true },
   phoneModel: { type: ObjectId, ref: 'PhoneModel', required: true },
+  qualityTier: { 
+    type: ObjectId, 
+    ref: 'PartQualityTiers', 
+    required: true 
+  }, // OEM/Aftermarket/Generic
   // Model-specific pricing
-  basePrice: { type: Number, required: true },
+  basePrice: { type: Number, required: true }, // Deprecated: use bundlePrice
   laborCharge: { type: Number, required: true },
   partsEstimate: { type: Number, required: true },
+  bundlePrice: { type: Number, required: true }, // Total: labor + parts
   duration: { type: Number, required: true }, // in minutes
   isActive: { type: Boolean, default: true },
   // IMMUTABLE AFTER CREATION
@@ -133,13 +139,48 @@ This document provides a complete backend specification for the Mobile Repair Mo
 }
 ```
 
-#### 1.1.5 ServiceRequiredParts Collection
+**Indexes:**
+- Unique: (serviceBrandConfig, phoneModel, qualityTier)
+- Index: (phoneModel, qualityTier, isActive)
+
+#### 1.1.5 PartQualityTiers Collection
+**Purpose:** Define part quality levels (OEM, Aftermarket, Generic)
+
+```javascript
+{
+  _id: ObjectId,
+  tierCode: { 
+    type: String, 
+    required: true, 
+    unique: true,
+    enum: ["OEM", "AFTERMARKET", "GENERIC"]
+  },
+  tierName: { type: String, required: true }, // e.g., "Original Equipment"
+  description: { type: String },
+  warrantyMultiplier: { 
+    type: Number, 
+    required: true,
+    default: 1.0 
+  }, // OEM=1.0, Aftermarket=0.7, Generic=0.5
+  sortOrder: { type: Number, default: 0 },
+  isActive: { type: Boolean, default: true },
+  // IMMUTABLE AFTER CREATION
+  createdById: { type: ObjectId, ref: 'User', required: true },
+  createdAt: { type: Date, default: Date.now }
+}
+```
+
+**Indexes:**
+- Unique: (tierCode)
+
+#### 1.1.6 ServiceRequiredParts Collection
 **Purpose:** Bill of Materials (BOM) for services
 
 ```javascript
 {
   _id: ObjectId,
   serviceTemplate: { type: ObjectId, ref: 'ServiceTemplates', required: true },
+  qualityTier: { type: ObjectId, ref: 'PartQualityTiers', required: true },
   part: { type: ObjectId, ref: 'Items', required: true },
   quantity: { type: Number, required: true },
   isOptional: { type: Boolean, default: false },
@@ -156,6 +197,10 @@ This document provides a complete backend specification for the Mobile Repair Mo
   createdAt: { type: Date, default: Date.now }
 }
 ```
+
+**Indexes:**
+- Compound: (serviceTemplate, qualityTier)
+- Index: (qualityTier, part)
 
 ### 1.2 Customer & Device Collections
 
@@ -304,6 +349,11 @@ This document provides a complete backend specification for the Mobile Repair Mo
   serviceTemplate: { type: ObjectId, ref: 'ServiceTemplates', required: true },
   serviceBrandConfig: { type: ObjectId, ref: 'ServiceBrandConfigs' },
   serviceModelPricing: { type: ObjectId, ref: 'ServiceModelPricing' },
+  selectedQualityTier: { 
+    type: ObjectId, 
+    ref: 'PartQualityTiers', 
+    required: true 
+  }, // Customer-selected tier
   // Service details
   serviceName: { type: String, required: true },
   description: { type: String },
@@ -345,6 +395,12 @@ This document provides a complete backend specification for the Mobile Repair Mo
   part: { type: ObjectId, ref: 'Items', required: true },
   partNumber: { type: String, required: true },
   partName: { type: String, required: true },
+  actualQualityTier: { 
+    type: ObjectId, 
+    ref: 'PartQualityTiers', 
+    required: true 
+  }, // Actual tier used
+  tierChangeReason: String, // If different from selectedQualityTier
   // Usage details
   quantity: { type: Number, required: true },
   isSerialized: { type: Boolean, default: false },
@@ -604,18 +660,23 @@ This document provides a complete backend specification for the Mobile Repair Mo
 
 **Process Flow:**
 1. **Quotation Generation:**
-   - Use service model pricing
+   - Present quality tier options (OEM/Aftermarket/Generic)
+   - Display bundled prices per tier
+   - Show warranty period per tier (multiplier applied)
+   - Use service model pricing for selected tier
    - Apply current technician rates
    - Include parts costs at reservation time
    - Calculate tax and totals
 
 2. **Quotation Review:**
    - Manager review for high-value jobs
-   - Verify parts availability
+   - Verify parts availability for selected tier
    - Check technician availability
    - Validate pricing rules
 
 3. **Customer Approval:**
+   - Customer selects quality tier
+   - Lock selected tier in JobServices
    - Send quotation to customer
    - Track approval status
    - Deposit collection if required
@@ -626,12 +687,16 @@ This document provides a complete backend specification for the Mobile Repair Mo
 - **Parts price changed:** Use quoted price or notify customer
 - **Customer rejects quotation:** Update status and archive
 - **Multiple approval levels:** Route through appropriate hierarchy
+- **Quality tier out of stock:** Offer alternative tier or backorder
+- **Customer downgrades tier mid-quote:** Regenerate quotation
+- **Mixed quality tiers in one job:** Allow but require separate line items
 
 ### 2.4 Parts Reservation & Cost Locking
 
 **Process Flow:**
 1. **Parts Reservation:**
-   - Check inventory availability
+   - Check inventory availability for selected quality tier
+   - Filter parts by qualityTier from ServiceRequiredParts
    - Reserve parts for the job
    - Update stock status to "On Hold"
    - Create stock ledger entry
@@ -640,16 +705,18 @@ This document provides a complete backend specification for the Mobile Repair Mo
    - Capture current part costs
    - Create financial snapshot
    - Prevent price changes for this job
-   - Document locked costs
+   - Document locked costs with quality tier
 
 3. **Substitution Handling:**
-   - If part unavailable, find substitute
-   - Get customer approval for substitution
-   - Update pricing accordingly
-   - Document substitution reason
+   - If part unavailable, find substitute within same tier first
+   - Cross-tier substitution requires customer approval
+   - Update pricing and warranty period accordingly
+   - Document substitution reason and actualQualityTier
 
 **Edge Cases:**
-- **Out-of-stock parts:** Backorder or substitute
+- **Out-of-stock parts:** Backorder or substitute within tier
+- **Cross-tier substitution:** Downgrade requires refund, upgrade requires payment
+- **Warranty adjustment:** Recalculate warranty using new tier multiplier
 - **Price fluctuations:** Use locked costs
 - **Damaged parts:** Replace from inventory
 - **Special order parts:** Track expected arrival date
@@ -739,19 +806,22 @@ This document provides a complete backend specification for the Mobile Repair Mo
 
 **Process Flow:**
 1. **Warranty Claim:**
-   - Validate warranty period
+   - Validate warranty period (adjusted by quality tier multiplier)
+   - Check originalQualityTier from JobServices
    - Verify issue is covered
    - Document failure details
    - Approve warranty repair
 
 2. **Rework Process:**
    - Create new job for rework
+   - Use same quality tier as original (or upgrade at company cost)
    - Assign to senior technician
    - Use original job reference
    - Update commission clawback if applicable
 
 3. **Final Resolution:**
    - Complete rework to satisfaction
+   - Extend warranty by tier multiplier from rework completion
    - Update warranty status
    - Process any refunds
    - Document resolution
@@ -761,6 +831,9 @@ This document provides a complete backend specification for the Mobile Repair Mo
 - **Customer misuse:** Charge for repair
 - **Multiple failures:** Escalate to supplier
 - **Warranty expiry:** Offer paid repair options
+- **Tier upgrade for warranty:** Company absorbs cost difference
+- **Original tier out of stock:** Upgrade automatically, no customer charge
+- **Commission recalculation:** Quality tier margin affects clawback amount
 
 ### 2.9 Cancellation & Partial Repairs
 

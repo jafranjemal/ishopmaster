@@ -143,8 +143,10 @@ Financial Treatment:
 - Revenue: $0 recognized (warranty obligation)
 - COGS: Full recognition (new cost event)
 - Inventory: New consumption from current stock
+- Tier Constraint: Must use original tier or upgraded tier (if original out of stock)
+- Upgrade Cost: Company absorbs cost difference if upgrading to higher tier
 - Warranty: Reserve account utilization
-
+```
 Accounting Entries:
 1. Warranty reserve utilization
    - Debit: Warranty Reserve

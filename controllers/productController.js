@@ -238,6 +238,7 @@ const addProduct = async (req, res) => {
       await ItemVariant.create({
         item_id: savedProduct._id,
         variantName: 'DEFAULT',
+        variantAttributes: [],
         sku: savedProduct.sku || null,
         barcode: savedProduct.barcode || null,
         defaultSellingPrice: savedProduct.pricing?.sellingPrice || 0,

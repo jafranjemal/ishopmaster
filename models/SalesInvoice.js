@@ -20,6 +20,14 @@ const itemSchema = new mongoose.Schema({
   warranty: {
     type: Number,
     default: 0,
+    set: function(value) {
+      // Handle string values like "3 manth" by extracting the numeric part
+      if (typeof value === 'string') {
+        const numericValue = parseFloat(value);
+        return isNaN(numericValue) ? 0 : numericValue;
+      }
+      return value;
+    }
   },
   warrantyUnit: {
     type: String,
