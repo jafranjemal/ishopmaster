@@ -62,6 +62,15 @@ const itemSchema = new mongoose.Schema({
     type: String,
     default: "Days",
   },
+  warranty_snapshot: {
+    policy_name: String,
+    phase1_days: Number,
+    phase2_days: Number,
+    terms_list: [String],
+    replacement_expiry: Date,
+    service_expiry: Date
+  },
+  refurb_tags: [String]
 });
 
 const paymentMethodSchema = new mongoose.Schema({

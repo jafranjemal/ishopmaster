@@ -11,6 +11,9 @@ const warrantyController = require("./warrantyController");
 const StockLedger = require("../models/StockLedger");
 const Item = require("../models/Items");
 const { logToLedger, syncUpward } = require("../services/inventoryService");
+const WarrantyPolicy = require("../models/WarrantyPolicy");
+const CustomerDevice = require("../models/CustomerDevice");
+const ItemVariant = require("../models/ItemVariantSchema");
 
 async function updateInventory(items) {
   console.log("updateInventory start...");
@@ -441,6 +444,87 @@ async function createSalesInvoice(
 
   console.log("totalAmount - ", totalAmount);
   console.log("total_paid_amount - ", total_paid_amount);
+
+  // --- FORENSIC SNAPSHOTTING: Warranty & Refurb Tags ---
+  for (const item of items) {
+    if (item.isSerialized && item.serialNumbers && item.serialNumbers.length > 0) {
+      // Fetch the specific stock record for the FIRST serial number provided
+      const stock = await SerializedStock.findOne({ serialNumber: item.serialNumbers[0] }).populate('warrantyPolicyId');
+
+      if (stock) {
+        item.refurb_tags = stock.refurb_tags || [];
+
+        if (stock.warrantyPolicyId) {
+          const policy = stock.warrantyPolicyId;
+          const saleDate = new Date();
+          const replExpiry = new Date(saleDate);
+          replExpiry.setDate(replExpiry.getDate() + (policy.phase1_days || 0));
+
+          const servExpiry = new Date(replExpiry);
+          servExpiry.setDate(servExpiry.getDate() + (policy.phase2_days || 0));
+
+          item.warranty_snapshot = {
+            policy_name: policy.name,
+            phase1_days: policy.phase1_days,
+            phase2_days: policy.phase2_days,
+            terms_list: policy.terms_list,
+            replacement_expiry: replExpiry,
+            service_expiry: servExpiry
+          };
+        }
+
+        // --- CUSTOMER DEVICE REGISTRY (VARIANT-AWARE) ---
+        try {
+          const variant = await ItemVariant.findById(item.variant_id).populate('item_id');
+
+          if (variant && variant.item_id) {
+            const baseItem = variant.item_id;
+
+            // Only create CustomerDevice record if the sold item is actually a DEVICE (Phone, Tablet, etc.)
+            // We don't want to track serialized batteries or accessories in the "Device Hub"
+            if (baseItem.category === 'Device') {
+              for (const sn of item.serialNumbers) {
+                await CustomerDevice.findOneAndUpdate(
+                  { serialNumber: sn },
+                  {
+                    serialNumber: sn,
+                    itemId: variant.item_id._id,
+                    variantId: variant._id,
+                    deviceName: variant.variantName,
+                    brandId: variant.item_id?.manufacturerId,
+                    modelId: variant.item_id?.phoneModelId,
+
+                    // Map flexible attributes
+                    color: variant.variantAttributes.find(a => a.key === 'Color')?.value || '',
+                    storage: variant.variantAttributes.find(a => a.key === 'Storage')?.value || '',
+                    RAM: variant.variantAttributes.find(a => a.key === 'RAM')?.value || '',
+                    network: variant.variantAttributes.find(a => a.key === 'Network')?.value || '',
+
+                    owner: customerId,
+                    source: 'Sales',
+                    isExternalPurchase: false,
+                    status: 'Active',
+
+                    warranty: {
+                      purchaseDate: new Date()
+                    },
+
+                    refurbNotes: item.refurb_tags || [],
+                  },
+                  { upsert: true, new: true, setDefaultsOnInsert: true }
+                );
+              }
+            }
+          }
+        } catch (err) {
+          console.error("CustomerDevice registry failed: Check variant_id mapping", err);
+        }
+
+      }
+    }
+  }
+
+
   // Create the sales invoice
   const invoice = new SalesInvoice({
     customer: customerId,

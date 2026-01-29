@@ -9,12 +9,11 @@ const Account = require('../models/Account');
 exports.createShift = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
+  let committed = false;
   try {
     let { userId, startCash, accountId, sourceAccountId, useExistingBalance } = req.body;
 
     // --- INPUT SANITIZATION ---
-    // Mongoose throws 'CastError' if we send "" to an ObjectId field. 
-    // We convert "" to null to satisfy the schema.
     if (accountId === "") accountId = null;
     if (sourceAccountId === "") sourceAccountId = null;
 
@@ -22,17 +21,16 @@ exports.createShift = async (req, res) => {
       throw new Error("Cash Drawer/Account is required");
     }
 
-    // 0. Worker Lock: Prevent one user from opening multiple shifts
+    // 0. Worker Lock
     const existingActiveShift = await Shift.findOne({ userId, status: 'active' }).session(session);
     if (existingActiveShift) {
-      throw new Error("Worker Lock: You already have an active session! Double-check your workstation.");
+      throw new Error("Worker Lock: You already have an active session!");
     }
 
     // 1. Fetch Drawer Account
     const drawerAccount = await Account.findById(accountId).session(session);
     if (!drawerAccount) throw new Error("Cash Drawer account not found");
 
-    // Collision Guard: Prevent overlapping shifts on one account
     if (drawerAccount.activeShiftId) {
       throw new Error("Collision Guard: This account is already linked to an active session.");
     }
@@ -40,7 +38,7 @@ exports.createShift = async (req, res) => {
     const physicalCash = Number(startCash);
     let ledgerBeforeTransfer = drawerAccount.balance || 0;
 
-    // 2. Handle Float Source (Vault to Drawer Transfer)
+    // 2. Handle Float Source
     if (!useExistingBalance && sourceAccountId) {
       const vaultAccount = await Account.findById(sourceAccountId).session(session);
       if (!vaultAccount) throw new Error("Source Vault account not found");
@@ -49,15 +47,12 @@ exports.createShift = async (req, res) => {
         throw new Error(`Insufficient funds in Vault! Available: Rs. ${vaultAccount.balance}`);
       }
 
-      // A. Debit Vault
       vaultAccount.balance -= physicalCash;
       await vaultAccount.save({ session });
 
-      // B. Credit Drawer
       drawerAccount.balance += physicalCash;
       await drawerAccount.save({ session });
 
-      // C. Record Transfer Transaction
       const vaultTx = new Transaction({
         account_id: vaultAccount._id,
         amount: physicalCash,
@@ -67,10 +62,10 @@ exports.createShift = async (req, res) => {
       });
       await vaultTx.save({ session });
 
-      ledgerBeforeTransfer = drawerAccount.balance; // Balance should now be 'ledger + physical'
+      ledgerBeforeTransfer = drawerAccount.balance;
     }
 
-    // 3. Validate Opening Balance (Audit Point)
+    // 3. Validate Opening Balance
     const openingDiscrepancy = physicalCash - ledgerBeforeTransfer;
 
     // 4. Force Ledger to match Reality
@@ -91,18 +86,17 @@ exports.createShift = async (req, res) => {
     // 5. Create Shift Record
     const newShift = new Shift({
       ...req.body,
-      accountId,       // Explicitly use sanitized null instead of ""
-      sourceAccountId, // Explicitly use sanitized null instead of ""
+      accountId,
+      sourceAccountId,
       openingMismatch: openingDiscrepancy,
       status: 'active'
     });
     await newShift.save({ session });
 
-    // Link Account to this Shift (Locking)
     drawerAccount.activeShiftId = newShift._id;
     await drawerAccount.save({ session });
 
-    // 6. Log Discrepancy (Now with valid Shift ID reference)
+    // 6. Log Discrepancy
     if (openingDiscrepancy !== 0) {
       const DiscrepancyLog = require("../models/DiscrepancyLog");
       await DiscrepancyLog.create([{
@@ -119,12 +113,12 @@ exports.createShift = async (req, res) => {
     }
 
     await session.commitTransaction();
+    committed = true;
 
-    // Final population for UI
     const populatedShift = await Shift.findById(newShift._id).populate('accountId', 'account_name balance');
     res.status(201).json(populatedShift);
   } catch (error) {
-    await session.abortTransaction();
+    if (!committed) await session.abortTransaction();
     console.error("Atomic Shift Creation Failed:", error);
     res.status(400).json({ message: error.message });
   } finally {
@@ -135,8 +129,9 @@ exports.createShift = async (req, res) => {
 exports.closeShift = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
+  let committed = false;
   try {
-    const { actualCash, breakdownActuals, notes } = req.body;
+    const { actualCash, breakdownActuals, notes, auditMetadata } = req.body;
     const shift = await Shift.findById(req.params.id).session(session);
     if (!shift) throw new Error('Shift not found');
     if (shift.status === 'closed') throw new Error('Terminal already decommissioned');
@@ -145,9 +140,7 @@ exports.closeShift = async (req, res) => {
       throw new Error('Physical cash count is required to close shift');
     }
 
-    // 1. Reconcile all payments from invoices
     const salesInvoices = await SalesInvoice.find({ invoice_id: { $in: shift.sales } }).session(session);
-
     const totals = { "Account": 0, "Cash": 0, "Card": 0, "Cheque": 0, "Bank Transfer": 0 };
     salesInvoices.forEach(inv => {
       inv.payment_methods.forEach(pm => {
@@ -155,7 +148,6 @@ exports.closeShift = async (req, res) => {
       });
     });
 
-    // 2. Map totals and Snapshot (Hard Cutoff)
     const breakdown = Object.keys(totals).map(method => {
       const expected = totals[method];
       const actual = method === "Cash" ? actualCash : (breakdownActuals?.[method] || expected);
@@ -177,16 +169,17 @@ exports.closeShift = async (req, res) => {
     shift.status = 'closed';
     shift.endTime = new Date();
     shift.notes = notes;
+    if (auditMetadata) {
+      shift.auditMetadata = auditMetadata;
+    }
 
     await shift.save({ session });
 
-    // 3. Ledger Reconciliation & Lock Release
     if (shift.accountId) {
       const account = await Account.findById(shift.accountId).session(session);
       if (account) {
-        // Force Ledger to match Reality
         account.balance = actualCash;
-        account.activeShiftId = null; // RELEASE THE COLLISION LOCK
+        account.activeShiftId = null;
         await account.save({ session });
 
         if (discrepancy !== 0) {
@@ -202,7 +195,6 @@ exports.closeShift = async (req, res) => {
       }
     }
 
-    // 4. Log Formal Discrepancy
     if (discrepancy !== 0) {
       const DiscrepancyLog = require("../models/DiscrepancyLog");
       await DiscrepancyLog.create([{
@@ -219,13 +211,14 @@ exports.closeShift = async (req, res) => {
     }
 
     await session.commitTransaction();
+    committed = true;
     res.status(200).json({
       message: discrepancy === 0 ? 'Terminal successfully decommissioned (Balanced)' : 'Terminal decommissioned with audit discrepancy logged',
       shift,
       discrepancy
     });
   } catch (error) {
-    await session.abortTransaction();
+    if (!committed) await session.abortTransaction();
     console.error("Atomic Shift Closure Failed:", error);
     res.status(500).json({ message: error.message });
   } finally {
@@ -233,310 +226,245 @@ exports.closeShift = async (req, res) => {
   }
 };
 
-// [NEW] X-Report: Real-time calculation without closure
-exports.getXReport = async (req, res) => {
+// [ANALYTICAL] Reconciliation Report: High-fidelity deep dive for a single shift
+exports.getShiftReconciliationReport = async (req, res) => {
   try {
     const { id } = req.params;
-    const shift = await Shift.findById(id);
-    if (!shift) return res.status(404).json({ message: "Shift not found" });
+    const shift = await Shift.findById(id)
+      .populate('userId', 'username name')
+      .populate('accountId', 'account_name balance')
+      .populate('sourceAccountId', 'account_name');
 
-    const salesInvoices = await SalesInvoice.find({ invoice_id: { $in: shift.sales } });
-    const totals = { "Account": 0, "Cash": 0, "Card": 0, "Cheque": 0, "Bank Transfer": 0 };
+    if (!shift) return res.status(404).json({ message: "Shift analytical record not found" });
 
-    salesInvoices.forEach(inv => {
-      inv.payment_methods.forEach(pm => {
-        if (totals.hasOwnProperty(pm.method)) totals[pm.method] += pm.amount;
-      });
-    });
+    // 1. Financial DNA Calculation
+    const totalInflow = shift.cashAdded || 0;
+    const totalOutflow = shift.cashRemoved || 0;
+    const totalCashSales = shift.totalCashSales || 0;
+    const systemExpected = (shift.startCash || 0) + totalCashSales + totalInflow - totalOutflow;
 
-    const calculatedCash = totals["Cash"] + shift.startCash + shift.cashAdded - shift.cashRemoved;
+    // 2. Fetch specific logs for this shift
+    const DiscrepancyLog = require("../models/DiscrepancyLog");
+    const discrepancies = await DiscrepancyLog.find({ reference_id: shift._id });
 
-    res.status(200).json({
-      shift_id: shift._id,
-      operator: shift.userId,
-      startTime: shift.startTime,
-      totals,
-      calculatedCash,
-      currentSalesCount: shift.sales.length
-    });
+    // 3. Build the Analytical Payload (as proposed in BUILD mode)
+    const payload = {
+      header: {
+        id: shift._id,
+        operator: shift.userId?.name || shift.userId?.username,
+        station: shift.accountId?.account_name || "Primary Drawer",
+        period: { start: shift.startTime, end: shift.endTime },
+        status: shift.status
+      },
+      financials: {
+        opening: shift.startCash,
+        sales: shift.totalSales,
+        cash_sales: totalCashSales,
+        adjustments: { in: totalInflow, out: totalOutflow },
+        expected: systemExpected,
+        actual: shift.actualCash || shift.finalCalculatedCash || systemExpected,
+        variance: shift.mismatch || 0
+      },
+      payment_matrix: shift.finalPaymentBreakdown?.length > 0 ? shift.finalPaymentBreakdown : shift.paymentBreakdown,
+      audit: {
+        discrepancies,
+        cash_register: shift.cashRegister,
+        sales_count: shift.sales.length,
+        notes: shift.notes
+      }
+    };
+
+    res.status(200).json(payload);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error("Analytical Engine Error:", error);
+    res.status(500).json({ message: "Failed to generate reconciliation report" });
   }
 };
 
 exports.getShifts = async (req, res) => {
   try {
-    const { status, startDate, endDate, userId } = req.query;
+    const { status, startDate, endDate, userId, page = 1, limit = 10, hasMismatch } = req.query;
     let query = {};
-
     if (status) query.status = status;
     if (userId) query.userId = userId;
+    if (startDate && endDate) { query.startTime = { $gte: new Date(startDate), $lte: new Date(endDate) }; }
+    if (hasMismatch === 'true') { query.mismatch = { $exists: true, $ne: 0 }; }
 
-    if (startDate && endDate) {
-      query.startTime = {
-        $gte: new Date(startDate),
-        $lte: new Date(endDate)
-      };
-    }
-
+    const skip = (page - 1) * limit;
+    const total = await Shift.countDocuments(query);
     const shifts = await Shift.find(query)
       .populate('userId', 'username employeeId')
-      .populate('accountId', 'account_name') // Added population for UI visibility
-      .sort({ startTime: -1 });
+      .populate('accountId', 'account_name')
+      .sort({ startTime: -1 })
+      .skip(Number(skip))
+      .limit(Number(limit));
 
-    res.status(200).json(shifts);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
+    // Calculate Summary Stats (Global, not just per page)
+    const allActiveShifts = await Shift.find({ status: 'active' });
+    const totalActiveCash = allActiveShifts.reduce((acc, s) => acc + (s.calculatedEndCash || 0), 0);
+    const totalMismatches = await Shift.countDocuments({ status: 'closed', mismatch: { $exists: true, $ne: 0 } });
+
+    res.status(200).json({
+      shifts,
+      stats: {
+        totalActiveCash,
+        totalMismatches,
+        activeCount: allActiveShifts.length
+      },
+      pagination: {
+        total,
+        pages: Math.ceil(total / limit),
+        currentPage: Number(page),
+        limit: Number(limit)
+      }
+    });
+  } catch (error) { res.status(500).json({ message: error.message }); }
 };
 
 exports.forceEndShift = async (req, res) => {
   try {
     const { id } = req.params;
     const { notes } = req.body;
-
     const shift = await Shift.findById(id);
     if (!shift) return res.status(404).json({ message: "Shift not found" });
     if (shift.status !== 'active') return res.status(400).json({ message: "Shift is not active" });
-
-    // Admin force close assumes equality or 0 cash if not counted
-    // We set actual = calculated to prevent false discrepancies
     const calculated = shift.calculatedEndCash;
-
     shift.actualCash = calculated;
     shift.mismatch = 0;
     shift.isClosed = true;
     shift.status = 'closed';
     shift.endTime = new Date();
     shift.notes = notes ? `${notes} (Admin Forced Closure)` : "Admin Forced Closure";
-
     await shift.save();
-
     res.status(200).json({ message: "Shift force-closed successfully", shift });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
+  } catch (error) { res.status(500).json({ message: error.message }); }
 };
 
 exports.closeAllActiveShifts = async (req, res) => {
   try {
     const { notes } = req.body;
     const activeShifts = await Shift.find({ status: 'active', isClosed: false });
-
-    if (activeShifts.length === 0) {
-      return res.status(200).json({ message: "No active shifts to close", count: 0 });
-    }
-
+    if (activeShifts.length === 0) return res.status(200).json({ message: "No active shifts to close", count: 0 });
     let closedCount = 0;
     for (const shift of activeShifts) {
       const session = await mongoose.startSession();
       session.startTransaction();
+      let committed = false;
       try {
         shift.endTime = new Date();
         shift.isClosed = true;
         shift.status = 'closed';
-
-        // Auto-balance logic for bulk decommissioning
         const calculated = (shift.totalCashSales || 0) + shift.startCash + shift.cashAdded - shift.cashRemoved;
-
-        // Populate Snapshots
         shift.finalCalculatedCash = calculated;
         shift.finalTotalSales = shift.totalSales || 0;
         shift.actualCash = calculated;
         shift.mismatch = 0;
         shift.notes = (shift.notes || "") + ` [Admin Bulk Decommission: ${notes || "Global Deactivate Action"}]`;
-
         await shift.save({ session });
-
-        // Release account lock if linked
-        if (shift.accountId) {
-          await Account.findByIdAndUpdate(shift.accountId, {
-            activeShiftId: null,
-            balance: calculated // Balance recon for consistency
-          }, { session });
-        }
-
+        if (shift.accountId) { await Account.findByIdAndUpdate(shift.accountId, { activeShiftId: null, balance: calculated }, { session }); }
         await session.commitTransaction();
+        committed = true;
         closedCount++;
       } catch (err) {
-        await session.abortTransaction();
+        if (!committed) await session.abortTransaction();
         console.error(`Decommission failed for shift ${shift._id}:`, err);
-      } finally {
-        session.endSession();
-      }
+      } finally { session.endSession(); }
     }
-
-    res.status(200).json({
-      message: `Successfully decommissioned ${closedCount} active terminals`,
-      count: closedCount
-    });
-  } catch (error) {
-    console.error("Error in bulk decommission:", error);
-    res.status(500).json({ message: error.message });
-  }
+    res.status(200).json({ message: `Successfully decommissioned ${closedCount} active terminals`, count: closedCount });
+  } catch (error) { res.status(500).json({ message: error.message }); }
 };
 
 exports.updateShift = async (req, res) => {
   try {
     const updatedShift = await Shift.findByIdAndUpdate(req.params.id, req.body, { new: true });
     res.status(200).json(updatedShift);
-  } catch (error) {
-    res.status(400).json({ message: error.message });
-  }
+  } catch (error) { res.status(400).json({ message: error.message }); }
 };
 
 exports.deleteShift = async (req, res) => {
   try {
     await Shift.findByIdAndDelete(req.params.id);
     res.status(204).send();
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
+  } catch (error) { res.status(500).json({ message: error.message }); }
 };
 
 exports.checkTodayShift = async (req, res) => {
   try {
     const userId = req.params.userId;
-    const today = new Date();
-    const todayShift = await Shift.findOne({
-      userId: userId,
-      status: 'active'
-    });
-    //.populate("userId");
-
+    const todayShift = await Shift.findOne({ userId: userId, status: 'active' });
     res.status(200).json(todayShift !== null);
-  } catch (error) {
-    res.status(400).json({ message: error.message });
-  }
+  } catch (error) { res.status(400).json({ message: error.message }); }
 };
-
 
 exports.getCurrentShift = async (req, res) => {
   try {
     const userId = req.params.userId;
-    const currentShift = await Shift.findOne({
-      userId: userId,
-      status: 'active',
-    }).sort({ startTime: -1 }).populate('accountId', 'account_name balance');
-
-    // console.log("current shift ", currentShift)
+    const currentShift = await Shift.findOne({ userId, status: 'active' }).sort({ startTime: -1 }).populate('accountId', 'account_name balance');
     if (currentShift) {
       const user = await User.findById(userId);
-
-      if (!user) return res.status(404).json({ error: 'No active shift found' });
       const employee = await Employees.findById(user.employeeId);
-
-      let result = {
-        ...currentShift.toObject(),
-        user,
-        employee,
-        calculatedEndCash: currentShift.calculatedEndCash
-      };
-
+      let result = { ...currentShift.toObject(), user, employee, calculatedEndCash: currentShift.calculatedEndCash };
       if (currentShift.sales && currentShift.sales.length > 0) {
-        // Optimization: Lean fetch (no items population) for header/dashboard performance
+        // Optimization: Fetch sales with items to extract serialized units (Phones)
         const sales = await SalesInvoice.find({ invoice_id: { $in: currentShift.sales } })
-          .select("invoice_id total_amount total_paid_amount status payment_methods invoice_date")
+          .select("invoice_id total_amount total_paid_amount status payment_methods invoice_date items")
           .populate("customer", "name customer_id");
+
         result.sales = sales;
+
+        // Extract high-value High-Fidelity checklist (Serialized items only)
+        const serializedItems = [];
+        sales.forEach(sale => {
+          sale.items.forEach(item => {
+            if (item.isSerialized && item.serialNumbers && item.serialNumbers.length > 0) {
+              item.serialNumbers.forEach(sn => {
+                serializedItems.push({
+                  invoice_id: sale.invoice_id,
+                  item_name: item.itemName,
+                  serial_number: sn
+                });
+              });
+            }
+          });
+        });
+        result.auditChecklist = serializedItems;
       }
-
-
       return res.status(200).json(result);
-    } else {
-      return res.status(200).json(null);
     }
-  } catch (error) {
-    console.error('Error getting current shift:', error);
-    return res.status(500).json({ error: 'Failed to get current shift', message: error.message });
-  }
+    return res.status(200).json(null);
+  } catch (error) { res.status(500).json({ error: error.message }); }
 };
 
 exports.updateShiftCash = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
+  let committed = false;
   try {
     const { shiftId } = req.params;
     const { type, amount, reason, category, authorizedBy } = req.body;
-
-    if (!['in', 'out'].includes(type)) {
-      throw new Error('Invalid operation type. Must be "in" or "out"');
-    }
-
+    if (!['in', 'out'].includes(type)) throw new Error('Invalid operation type');
     const numAmount = Number(amount);
-    if (!numAmount || isNaN(numAmount) || numAmount <= 0) {
-      throw new Error('Invalid amount. Must be a positive number');
-    }
-
-    // 1. Find and lock Shift
+    if (!numAmount || numAmount <= 0) throw new Error('Invalid amount');
     const shift = await Shift.findOne({ _id: shiftId, status: 'active' }).session(session);
-    if (!shift) throw new Error('Active terminal session not found');
-
-    // 2. Find and lock Account
+    if (!shift) throw new Error('Active session not found');
     const account = await Account.findById(shift.accountId).session(session);
-    if (!account) throw new Error('Linked Cash Drawer not found in ledger');
-
-    // 3. Concurrency Guard: Check balance for Pay-outs
-    if (type === 'out' && account.balance < numAmount) {
-      throw new Error(`Insufficient Drawer Balance! System says: Rs. ${account.balance}`);
-    }
-
-    // 4. Atomic Ledger Update
+    if (!account) throw new Error('Linked Cash Drawer not found');
+    if (type === 'out' && account.balance < numAmount) throw new Error(`Insufficient Balance: Rs. ${account.balance}`);
     const snapshotBefore = account.balance;
     const delta = type === 'in' ? numAmount : -numAmount;
     account.balance += delta;
     await account.save({ session });
-
-    // 5. Record Ledger Transaction
-    const auditTx = new Transaction({
-      account_id: account._id,
-      amount: numAmount,
-      transaction_type: type === 'in' ? "Deposit" : "Withdrawal",
-      reason: `${category || 'Manual Adjustment'}: ${reason || 'N/A'} (Audit Ref: ${shiftId.substring(0, 6)})`,
-      balance_after_transaction: account.balance
-    });
+    const auditTx = new Transaction({ account_id: account._id, amount: numAmount, transaction_type: type === 'in' ? "Deposit" : "Withdrawal", reason: `${category || 'Manual'}: ${reason || 'N/A'}`, balance_after_transaction: account.balance });
     await auditTx.save({ session });
-
-    // 6. Log in Shift Register (Forensic Snapshot)
-    shift.cashRegister.push({
-      entry_type: type,
-      amount: numAmount,
-      reason: reason,
-      category: category || 'Generic',
-      authorizedBy: authorizedBy || null,
-      transactionId: auditTx._id,
-      snapshotBalance: snapshotBefore // Forensic proof of point-in-time balance
-    });
-
-    if (type === 'in') {
-      shift.cashAdded += numAmount;
-    } else {
-      shift.cashRemoved += numAmount;
-    }
-
+    shift.cashRegister.push({ entry_type: type, amount: numAmount, reason, category: category || 'Generic', authorizedBy, transactionId: auditTx._id, snapshotBalance: snapshotBefore });
+    if (type === 'in') { shift.cashAdded += numAmount; } else { shift.cashRemoved += numAmount; }
     await shift.save({ session });
-
     await session.commitTransaction();
-
-    const populatedShift = await Shift.findById(shift._id)
-      .populate('accountId', 'account_name balance');
-
-    res.status(200).json({
-      message: `Cash ${type === 'in' ? 'Deposit' : 'Withdrawal'} recorded correctly.`,
-      shift: {
-        ...populatedShift.toObject(),
-        calculatedEndCash: populatedShift.calculatedEndCash
-      }
-    });
-
+    committed = true;
+    const populatedShift = await Shift.findById(shift._id).populate('accountId', 'account_name balance');
+    res.status(200).json({ message: `Cash ${type} recorded`, shift: { ...populatedShift.toObject(), calculatedEndCash: populatedShift.calculatedEndCash } });
   } catch (error) {
-    await session.abortTransaction();
-    console.error('Industrial Cash Logic Failed:', error);
-    res.status(400).json({
-      error: 'Transaction failed',
-      message: error.message
-    });
-  } finally {
-    session.endSession();
-  }
+    if (!committed) await session.abortTransaction();
+    res.status(400).json({ message: error.message });
+  } finally { session.endSession(); }
 };

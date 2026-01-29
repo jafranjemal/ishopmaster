@@ -135,6 +135,10 @@ const shiftSchema = new mongoose.Schema(
             type: Number,
             default: 0
         },
+        auditMetadata: {
+            verifiedIMEIs: [{ type: String }],
+            totalIMEIs: { type: Number, default: 0 }
+        }
     },
     {
         timestamps: true,

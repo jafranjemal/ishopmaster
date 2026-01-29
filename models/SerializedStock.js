@@ -28,6 +28,8 @@ const SerializedStockSchema = new mongoose.Schema({
   returnReference: { type: mongoose.Schema.Types.ObjectId, ref: "SalesInvoice" },
   lastReturnReason: { type: String },
 
+  warrantyPolicyId: { type: mongoose.Schema.Types.ObjectId, ref: "WarrantyPolicy" },
+  refurb_tags: { type: [String], default: [] },
   notes: { type: String }, // Additional notes about the item
 
 }, { timestamps: true });

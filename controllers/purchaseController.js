@@ -220,6 +220,8 @@ exports.createPurchase = async (req, res) => {
                   status: "Available",
                   condition: unit.condition || "Brand New",
                   batteryHealth: unit.batteryHealth,
+                  warrantyPolicyId: unit.warrantyPolicyId,
+                  refurb_tags: unit.refurb_tags || [],
                 },
               ],
               { session }
@@ -575,6 +577,8 @@ exports.verifyPurchasePhysical = async (req, res) => {
                 status: "Available",
                 condition: unit.condition || "Brand New",
                 batteryHealth: unit.batteryHealth,
+                warrantyPolicyId: unit.warrantyPolicyId,
+                refurb_tags: unit.refurb_tags || [],
               },
             ],
             { session }

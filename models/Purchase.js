@@ -59,6 +59,15 @@ const purchaseSchema = new mongoose.Schema({
       batch_number: { type: String, required: true }, // Unique Batch ID
       isSerialized: { type: Boolean, default: false },
       serializedItems: [
+        {
+          serialNumber: { type: String },
+          unitCost: { type: Number },
+          sellingPrice: { type: Number },
+          condition: { type: String },
+          batteryHealth: { type: Number },
+          warrantyPolicyId: { type: mongoose.Schema.Types.ObjectId, ref: "WarrantyPolicy" },
+          refurb_tags: { type: [String], default: [] }
+        }
       ]
     },
   ],

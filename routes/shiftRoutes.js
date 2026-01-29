@@ -11,7 +11,7 @@ router.get('/', shiftController.getShifts);
 router.put('/:id', shiftController.updateShift);
 router.delete('/:id', shiftController.deleteShift);
 router.get('/today/:userId', shiftController.checkTodayShift);
-router.get('/:id/x-report', shiftController.getXReport);
+router.get('/:id/reconciliation-report', shiftController.getShiftReconciliationReport);
 router.get('/:userId/current-shift', shiftController.getCurrentShift);
 router.patch('/:shiftId/cash', shiftController.updateShiftCash);
 module.exports = router;
