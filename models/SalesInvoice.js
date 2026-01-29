@@ -1,8 +1,37 @@
 const mongoose = require("mongoose");
 
 const itemSchema = new mongoose.Schema({
-  item_id: { type: mongoose.Schema.Types.ObjectId, ref: "Item", required: true },
+  // item_id: { type: mongoose.Schema.Types.ObjectId, ref: "Item", required: true },
+  /**
+   * ALWAYS the sold entity
+   * - legacy item → base item id
+   * - no-variant item → base item id
+   * - variant item → variant id
+   */
+  item_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    required: true,
+  },
 
+  /**
+   * Only present for new variant-based items
+   * Legacy items → undefined
+   */
+  variant_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "ItemVariant",
+    required: false,
+  },
+
+  /**
+   * Base item reference (ONLY for analytics / grouping)
+   * Legacy items → undefined
+   */
+  base_item_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Item",
+    required: false,
+  },
   _id: { type: String, required: true },
   barcode: { type: String, required: true },
   itemName: { type: String, required: true },
@@ -20,7 +49,7 @@ const itemSchema = new mongoose.Schema({
   warranty: {
     type: Number,
     default: 0,
-    set: function(value) {
+    set: function (value) {
       // Handle string values like "3 manth" by extracting the numeric part
       if (typeof value === 'string') {
         const numericValue = parseFloat(value);
@@ -38,6 +67,7 @@ const itemSchema = new mongoose.Schema({
 const paymentMethodSchema = new mongoose.Schema({
   method: { type: String, enum: ["Account", "Cash", "Card", "Cheque", "Bank Transfer"], required: true },
   amount: { type: Number, required: true }, // Amount paid via this method
+  target_account_id: { type: mongoose.Schema.Types.ObjectId, ref: "Account", required: false },
   details: {
     cheque_number: { type: String },
     bank_account_name: { type: String },
@@ -47,7 +77,7 @@ const paymentMethodSchema = new mongoose.Schema({
       card_last_4_digits: { type: String },
     },
   },
-});
+}, { _id: false });
 
 const salesInvoiceSchema = new mongoose.Schema({
   invoice_id: { type: String, unique: true }, // Unique invoice identifier

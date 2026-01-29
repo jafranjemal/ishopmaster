@@ -15,8 +15,10 @@ Transform the monolithic monolithic architecture into a **Shared-Code, Isolated-
 
 ## 3. NEW INFRASTRUCTURE COMPONENTS
 - **TenantResolver**: Middleware to extract `tenantId` from Subdomain/Host.
-- **DatabaseManager**: A cache-enabled service that creates/returns Mongoose connections per tenant.
-- **BaseRepository**: A wrapper that ensures all queries are executed on the tenant-specific connection.
+- **DatabaseManager**: A cache-enabled service that manages tenant contexts.
+  - **Optimization**: Use `mongoose.connection.useDb(tenantDbName, { useCache: true })` for tenants sharing the same MongoDB cluster.
+  - **Lazy Registration**: Definitions are registered on the tenant connection *only when first requested* to prevent startup bloat.
+  - **Lifecycle Management**: Implement an LRU cache for connections; close inactive tenant connections after ~15–30 minutes of idle time to reclaim resources.
 
 ## 4. IMPLEMENTATION PHASES
 
@@ -42,8 +44,8 @@ Transform the monolithic monolithic architecture into a **Shared-Code, Isolated-
 - **Idempotency**: All services must support idempotency keys to prevent duplicate operations in a distributed system.
 
 ## 6. TEST PLAN (LEAKAGE PREVENTION)
-- **Isolation Test**: Insert data in Tenant A, verify it is invisible to Tenant B.
-- **Load Test**: Verify connection pool doesn't crash with 100+ active tenants.
+- **Automated Isolation Test**: (MANDATORY) Part of CI/CD. Script generates two mock tenants, inserts identical-ID records into both, and verifies Tenant A cannot `find()` Tenant B's data.
+- **Load Test**: Verify connection pool stability with 500+ active logical database switches.
 - **Refactor Test**: Ensure 100% unit test coverage for `Services` after logic extraction.
 
 ## 7. DEVELOPMENT STRATEGY (LOCAL TESTING)
@@ -107,13 +109,15 @@ To achieve <50ms POS search responses, we will deploy a self-hosted Redis instan
 ### Caching Strategy (Speed Optimization)
 1.  **POS Product Search (The "Hot" Cache)**:
     - **Key**: `tenant:{id}:products:search_index`
-    - **Structure**: RedisJSON (if available) or simple Hash Map.
-    - **Flow**: POS Search -> Check Redis -> (Hit? Return instantly) -> (Miss? DB Query + Write to Redis).
+    - **Structure**: Plain **Redis HASH** where field is `product_id` and value is `JSON.stringify(productData)`.
+    - **Search logic**: For complex filters, use **Sorted Sets** (ZSET) to store searchable terms (e.g., brand:iphone) mapped to IDs.
+    - **Flow**: POS Search -> Check Redis -> (Hit? Parse JSON + Return) -> (Miss? DB Query + Write to Redis).
     - **Invalidation**: On product update/stock change -> Delete Key.
 
 2.  **Stock Availability**:
     - **Key**: `tenant:{id}:stock:{sku}`
-    - **Value**: Integer (e.g., "5").
+    - **Structure**: Simple **Redis STRING**.
+    - **Usage**: Use `DECRBY` / `INCRBY` atomic operations for real-time counters.
     - **Benefit**: Prevents DB locking during high-traffic sales.
 
 3.  **Tenant Resolution**:

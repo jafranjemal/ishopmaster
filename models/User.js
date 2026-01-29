@@ -77,8 +77,12 @@ userSchema.methods.hasRole = function (roleName) {
 
 // Method to check user permissions
 userSchema.methods.hasPermission = async function (module, action) {
-  await this.populate('roles directPermissions.permission');
-
+  if (!this.populated('roles')) {
+    await this.populate({
+      path: 'roles',
+      populate: { path: 'permissions' }
+    });
+  }
   // Check direct permissions
   const directPermission = this.directPermissions.find(
     dp => dp.permission.module === module &&
@@ -88,10 +92,9 @@ userSchema.methods.hasPermission = async function (module, action) {
   if (directPermission) return directPermission.granted;
 
   // Check role-based permissions
+
   return this.roles.some(role =>
-    role.permissions.some(
-      p => p.module === module && p.action === action
-    )
+    role.permissions?.some(p => p.module === module && p.actions.includes(action))
   );
 };
 userSchema.methods.comparePassword = async function (candidatePassword) {

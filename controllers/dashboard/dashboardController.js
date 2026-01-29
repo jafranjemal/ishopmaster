@@ -1,7 +1,7 @@
 const SalesInvoice = require("../../models/SalesInvoice");
 const RepairOrder = require("../../models/RepairOrder");
-const Stock = require("../../models/Stock");
 const mongoose = require("mongoose");
+const NonSerializedStock = require("../../models/NonSerializedStock");
 
 /**
  * Get unified dashboard metrics
@@ -37,7 +37,7 @@ exports.getDashboardSummary = async (req, res) => {
         ]);
 
         // 3. Inventory Alerts
-        const lowStock = await Stock.find({ available_qty: { $lte: 5 } })
+        const lowStock = await NonSerializedStock.find({ available_qty: { $lte: 5 } })
             .populate('item_id', 'itemName')
             .limit(5);
 

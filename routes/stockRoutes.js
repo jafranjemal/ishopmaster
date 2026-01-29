@@ -20,6 +20,8 @@ router.get('/batch/:item_id/:batch_number', stockController.getStockByBatch);
 router.get('/items-with-stock', stockController.getAllItemsWithStock);
 router.get('/items-with-unified-stock', stockController.getUnifiedStock);
 router.get('/movement-dashboard', stockController.getStockMovementDashboardData);
+router.get('/statistics', stockController.getStockStatistics);
+router.get('/restock-suggestions', stockController.getRestockSuggestions);
 
 
 // Route to get stock details for a specific item 

@@ -3,57 +3,58 @@ const mongoose = require('mongoose');
 const permissionSchema = new mongoose.Schema({
   name: {
     type: String,
-    
+
   },
   roleId: {
     type: String,
-    
+
   },
-   
-    module: {
-      type: String,
-      required: true,
-      // enum: [
-      //   'customers', 
-      //   'dashboard',
-      //   'employee',
-      //   'items',
-      //   'payments',
-      //   'pos',
-      //   'purchase',
-      //   'repair',
-      //   'sales',
-      //   'shift',
-      //   'stock',
-      //   'suppliers',
-      //   'transactions',
-      //   'units',
-      //   'users'
-      // ]
-    },
-    actions: [{
-      type: String,
-      enum: ['view', 'create', 'edit', 'delete', 'export'],
-      required: true
-    }]
+
+  module: {
+    type: String,
+    required: true,
+    // enum: [
+    //   'customers', 
+    //   'dashboard',
+    //   'employee',
+    //   'items',
+    //   'payments',
+    //   'pos',
+    //   'purchase',
+    //   'repair',
+    //   'sales',
+    //   'shift',
+    //   'stock',
+    //   'suppliers',
+    //   'transactions',
+    //   'units',
+    //   'users'
+    // ]
+  },
+  actions: [{
+    type: String,
+    enum: ['view', 'create', 'edit', 'delete', 'export', 'view_sensitive'],
+    required: true
+  }]
   ,
   description: String,
   isActive: {
     type: Boolean,
     default: true
   }
-  
-}, {
-  timestamps: true});
 
-  // Compound index for unique module-action combinations
+}, {
+  timestamps: true
+});
+
+// Compound index for unique module-action combinations
 //permissionSchema.index({ module: 1, action: 1 }, { unique: true });
 
 
 async function generatePermissionName(module, actions) {
   // Format module name (uppercase first letter)
   const formattedModule = module.toLowerCase();
-  
+
   // Format actions (uppercase)
   const formattedActions = actions
     .map(action => action.toUpperCase())
@@ -65,7 +66,7 @@ async function generatePermissionName(module, actions) {
 }
 
 
-permissionSchema.pre('save', async function(next) {
+permissionSchema.pre('save', async function (next) {
   try {
     if (!this.isModified('module') && !this.isModified('actions')) {
       return next();

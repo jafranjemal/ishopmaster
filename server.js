@@ -39,9 +39,6 @@ app.use(cors({
 
 
 
-// Database Connection
-connectDB();
-
 // Routes
 const productRoutes = require('./routes/productRoutes');
 const supplierRoutes = require("./routes/supplierRoutes");
@@ -84,6 +81,7 @@ const itemVariantRoutes = require("./routes/itemVariantRoutes");
 const attributeRoutes = require("./routes/attributeRoutes");
 const expenseRoutes = require("./routes/expenseRoutes");
 const mediaRoutes = require("./routes/mediaRoutes");
+const rfqRoutes = require("./routes/rfqRoutes");
 
 app.use('/api/items', productRoutes);
 app.use("/api/suppliers", supplierRoutes);
@@ -125,6 +123,7 @@ app.use("/api/variants", itemVariantRoutes);
 app.use("/api/attributes", attributeRoutes);
 app.use("/api/expenses", expenseRoutes);
 app.use("/api/media", mediaRoutes);
+app.use("/api/rfq", rfqRoutes);
 
 app.post('/api/print-barcodes', async (req, res) => {
   const { items } = req.body;
@@ -216,6 +215,7 @@ process.on('unhandledRejection', (err) => {
   });
 });
 
+
 // Uncaught exceptions
 process.on('uncaughtException', (err) => {
   console.log('UNCAUGHT EXCEPTION! 💥 Shutting down...');
@@ -227,6 +227,9 @@ process.on('uncaughtException', (err) => {
 const dbType = process.env.NODE_ENV === 'production' ? 'Cloud' : 'Local';
 
 if (require.main === module) {
+  // Database Connection
+  connectDB();
+
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://0.0.0.0:${PORT} in ${process.env.NODE_ENV} environment with ${dbType} database`);
   });

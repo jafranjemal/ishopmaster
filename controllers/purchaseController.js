@@ -1,5 +1,4 @@
 const Purchase = require("../models/Purchase");
-// const Stock = require("../models/Stock"); // Legacy
 const Account = require("../models/Account");
 const ItemVariant = require("../models/ItemVariantSchema");
 const Transaction = require("../models/Transaction");
@@ -12,287 +11,8 @@ const AuditLog = require("../models/AuditLog");
 const Attribute = require("../models/Attribute");
 const Supplier = require("../models/Supplier");
 const Customer = require("../models/Customer");
+const { logToLedger, syncUpward } = require("../services/inventoryService");
 
-// Create a new purchase
-exports.createPurchase_old = async (req, res) => {
-  try {
-    const purchaseData = req.body;
-
-    // Generate unique batch number for each purchased item
-    purchaseData.purchasedItems = purchaseData.purchasedItems.map((item) => ({
-      ...item,
-      batch_number: `BATCH-${Date.now()}-${Math.random()
-        .toString(36)
-        .substring(2, 8)
-        .toUpperCase()}`,
-    }));
-
-    // Save the purchase
-    const purchase = new Purchase(purchaseData);
-    await purchase.save();
-
-    // Update Stock
-    for (const item of purchase.purchasedItems) {
-      // Find all existing stock entries for this item_id
-      const existingStockEntries = await Stock.find({ item_id: item.item_id });
-
-      // Sum up the available quantities to get the total stock before this purchase
-      const beforePurchaseAvailable_qty = existingStockEntries.reduce(
-        (sum, stock) => sum + stock.available_qty,
-        0
-      );
-
-      // Create a new stock entry for the new batch
-      await Stock.create({
-        item_id: item.item_id,
-        purchase_id: purchase._id,
-        batch_number: item.batch_number,
-        purchase_date: purchase.purchaseDate,
-        purchase_qty: item.purchaseQty,
-        available_qty: item.purchaseQty, // New batch's available quantity starts as the purchase quantity
-        beforePurchaseAvailable_qty: beforePurchaseAvailable_qty, // Total available stock before this purchase
-        unit_cost: item.unitCost,
-        selling_price: item.sellingPrice,
-        unit: item.unit,
-      });
-    }
-
-    res
-      .status(201)
-      .json({ message: "Purchase created successfully", purchase });
-  } catch (error) {
-    res.status(500).json({ message: "Error creating purchase", error });
-  }
-};
-
-// Create a new purchase
-exports.createPurchase1 = async (req, res) => {
-  //const session = await mongoose.startSession();
-  // session.startTransaction();
-  //console.log("create purchase api called");
-  console.log("🔥 createPurchase controller START", new Date().toISOString());
-
-  try {
-    const purchaseData = req.body;
-    let variant;
-    // STEP 1: Process items to find or create variants BEFORE saving the purchase
-    for (const item of purchaseData.purchasedItems) {
-      if (item.isSerialized && item.variantAttributes) {
-        // Find the base item to get its name
-        const baseItem = await Item.findById(item.item_id);
-        if (!baseItem) {
-          throw new Error(`Item with ID ${item.item_id} not found.`);
-        }
-
-        if (!item.sellingPrice)
-          throw new Error(
-            `Item with sellingPrice: ${item.sellingPrice} not found.`
-          );
-
-        // Create a consistent, searchable name for the variant
-        const allAttributes = await Attribute.find().lean();
-        const attrOrderMap = allAttributes.reduce((acc, curr) => {
-          acc[curr.key.toUpperCase()] = curr.order;
-          return acc;
-        }, {});
-
-        const sortedAttrs = (item.variantAttributes || [])
-          .filter(a => a && a.value)
-          .sort((a, b) => {
-            const orderA = attrOrderMap[a.key.toUpperCase()] ?? 99;
-            const orderB = attrOrderMap[b.key.toUpperCase()] ?? 99;
-            return orderA - orderB;
-          });
-
-        const attributesString = sortedAttrs
-          .map((attr) => attr.value.toUpperCase())
-          .join("-");
-
-        const variantName = attributesString
-          ? `${baseItem.itemName} - ${attributesString}`.trim()
-          : baseItem.itemName.trim();
-
-        console.log("item.itemName", item.itemName);
-        console.log("variantName", variantName);
-        // Use findOneAndUpdate with upsert to find an existing variant or create a new one
-        variant = await ItemVariant.findOneAndUpdate(
-          {
-            item_id: item.item_id,
-            variantName: variantName, // Use the unique name to find the variant
-          },
-          {
-            $setOnInsert: {
-              item_id: item.item_id,
-              variantAttributes: item.variantAttributes,
-              variantName: variantName,
-              defaultSellingPrice: item.sellingPrice, // Set initial default price
-              lastUnitCost: item.unitCost, // Set initial cost
-            },
-          },
-          {
-            upsert: true, // Create the document if it doesn't exist
-            new: true, // Return the new or updated document
-            // session // Pass session if using transactions
-          }
-        );
-
-        console.log("founded varient ", variant);
-        // console.log("variant found/created: ", variant);
-        // Attach the found/created variant's ID to the item for later use
-        item.variant_id = variant._id;
-
-        // console.log("item after variant assignment: ", item.variant_id);
-      }
-    }
-
-    // console.log("all items after variant processing: ", purchaseData.purchasedItems);
-    const batchNo = `BATCH-${Date.now()}-${Math.random()
-      .toString(36)
-      .substring(2, 8)
-      .toUpperCase()}`;
-    // Generate unique batch number for each purchased item
-
-    // console.log(purchaseData.purchasedItems.map(x=> x.serializedItems))
-    // return
-
-    purchaseData.purchasedItems = purchaseData.purchasedItems.map((item) => {
-      // If the item is serialized, also assign batch number to each serialized item
-
-      console.log("item.variant_id ", item.variant_id);
-      if (item.isSerialized && item.serializedItems) {
-        item.serializedItems = item.serializedItems.map((itm) => ({
-          ...itm,
-          variant_id: item.variant_id,
-
-          batch_number: batchNo,
-        }));
-      }
-
-      return {
-        ...item,
-        variant_id: item.variant_id,
-        batch_number: batchNo,
-      };
-    });
-
-    // STEP 2: Save the purchase with the enriched item data
-    //const purchase = new Purchase(purchaseData);
-    //await purchase.save();
-    console.log(
-      "purchaseData ",
-      purchaseData.purchasedItems.map((x) => x.serializedItems)
-    );
-
-    const purchase = await Purchase.create(purchaseData);
-    // console.log("\n\n purchased saved success ", purchase);
-    // STEP 3: Update Stock using the now-saved purchase and variant IDs
-
-    // STEP 3: Update Stock using the now-saved purchase and variant IDs
-    for (const item of purchase.purchasedItems) {
-      if (item.isSerialized) {
-        // Handle serialized items
-        if (item.serializedItems && item.serializedItems.length > 0) {
-          for (const serializedUnit of item.serializedItems) {
-            // Create a stock entry for each unique physical unit
-            console.log("serializedUnit ", serializedUnit);
-            await SerializedStock.create(
-              [
-                {
-                  item_id: item.item_id,
-                  variant_id: serializedUnit.variant_id, // ✅ Link to the variant
-                  purchase_id: purchase._id,
-                  serialNumber: serializedUnit.serialNumber,
-                  batch_number: item.batch_number,
-                  purchaseDate: purchase.purchaseDate,
-                  unitCost: serializedUnit.unitCost,
-                  sellingPrice: serializedUnit.sellingPrice,
-                  status: "Available",
-
-                  // ✅ Save unit-specific data
-                  batteryHealth: serializedUnit.batteryHealth ?? serializedUnit.battery_health,
-                  condition: serializedUnit.condition,
-                },
-              ]
-              // { session } // Pass session if using transactions
-            );
-          }
-        }
-      } else {
-        // Handle non-serialized items (Backward compatibility)
-        const existingStockEntries = await NonSerializedStock.find({
-          item_id: item.item_id,
-        });
-        const beforePurchaseAvailable_qty = existingStockEntries.reduce(
-          (sum, stock) => sum + stock.availableQty,
-          0
-        );
-
-        await NonSerializedStock.create(
-          [
-            {
-              item_id: item.item_id,
-              variant_id: item.variant_id, // ✅ Link to the variant
-              purchase_id: purchase._id,
-              batch_number: item.batch_number,
-              purchaseDate: purchase.purchaseDate,
-              purchaseQty: item.purchaseQty,
-              availableQty: item.purchaseQty,
-              beforePurchaseAvailableQty: beforePurchaseAvailable_qty,
-              unitCost: item.unitCost,
-              sellingPrice: item.sellingPrice,
-              unit: item.unit,
-            },
-          ]
-          // { session } // Pass session if using transactions
-        );
-      }
-    }
-    // STEP 4: Update Supplier Account
-
-    // Find the supplier account
-    const supplierAccount = await Account.findOne({
-      account_owner_type: "Supplier",
-      related_party_id: purchase.supplier,
-    });
-
-    if (!supplierAccount) {
-      throw new Error("Supplier account not found.");
-    }
-
-    // Calculate the new due amount by adding the current grand total to the existing balance
-    const newDueAmount = supplierAccount.balance - purchase.grand_total; // Subtract purchase grand total from existing balance
-
-    // Update the supplier account balance with the new due amount
-    supplierAccount.balance = newDueAmount;
-
-    await supplierAccount.save();
-
-    // Record the transaction
-    const transaction = new Transaction({
-      account_id: supplierAccount._id,
-      amount: purchase.grand_total * -1,
-      transaction_type: "Withdrawal",
-      reason: `Purchase: ${purchase.referenceNumber}`,
-      transaction_date: new Date(),
-      balance_after_transaction: supplierAccount.balance,
-    });
-
-    await transaction.save();
-
-    //await session.commitTransaction();
-    //session.endSession();
-
-    res
-      .status(201)
-      .json({ message: "Purchase created successfully", purchase });
-  } catch (error) {
-    //await session.abortTransaction();
-    //session.endSession();
-    console.error("🔥 createPurchase controller ERROR", error);
-    console.error("Error creating purchase:", error);
-    res.status(500).json({ message: "Error creating purchase", error });
-  }
-};
 
 exports.createPurchase = async (req, res) => {
   const session = await mongoose.startSession();
@@ -304,11 +24,75 @@ exports.createPurchase = async (req, res) => {
     // SANITIZATION: Handle empty strings for ObjectIds to prevent CastError
     if (data.customer === "") data.customer = null;
     if (data.supplier === "") data.supplier = null;
+    if (data.ref_agent_id === "") data.ref_agent_id = null;
+
+    // AUTO-CALCULATE: Financial Totals (Fail-safe)
+    const itemsSubtotal = data.purchasedItems.reduce((acc, item) => acc + (Number(item.total_price) || (Number(item.purchaseQty) * Number(item.unitCost)) || 0), 0);
+    const discount = Number(data.purchase_discount || 0);
+    const taxPercent = Number(data.purchase_tax || 0);
+
+    const afterDiscount = itemsSubtotal - discount;
+    const taxAmount = (afterDiscount * taxPercent) / 100;
+    const calculatedGrandTotal = Number((afterDiscount + taxAmount).toFixed(2));
+
+    data.total_items_count = data.purchasedItems.reduce((sum, item) => sum + (item.purchaseQty || 0), 0);
+    data.grand_total = calculatedGrandTotal;
+
+    // Initial Payment Due (if not provided/zero)
+    if (!data.payment_due_amount || data.payment_due_amount === 0) {
+      data.payment_due_amount = calculatedGrandTotal;
+    }
 
     console.log("🔥 createPurchase DATA:", data);
 
-    // Force status to "Pending Verification" for stock integrity protocol
-    data.purchase_status = "Pending Verification";
+    // Force status logic based on SourceType
+    // DIRECT = Received (Stock Immediate)
+    // PO = Pending Verification (Stock Deferred)
+    if (data.sourceType === 'DIRECT') {
+      data.purchase_status = "Received";
+      data.isStockUpdated = true;
+    } else {
+      // PO
+      data.purchase_status = "Pending Verification";
+      data.isStockUpdated = false;
+      data.sourceType = 'PO';
+    }
+
+    /* ------------------------------------------------
+   0. SMART GUARD (CREDIT & SEGMENTS)
+--------------------------------------------------*/
+    if (data.payment_type === "Credit" && data.supplier) {
+      const supplierDoc = await Supplier.findById(data.supplier).session(session);
+      if (supplierDoc) {
+        let limit = supplierDoc.financial.credit_limit;
+        let utilized = supplierDoc.financial.current_balance;
+
+        // Segment Logic
+        if (data.credit_segment_name && supplierDoc.financial.credit_segments) {
+          const segment = supplierDoc.financial.credit_segments.find(s => s.name === data.credit_segment_name);
+          if (segment) {
+            limit = segment.limit;
+            utilized = segment.utilized;
+
+            if ((utilized + data.grand_total) > limit) {
+              throw new Error(`Credit limit exceeded for ${segment.name} segment. Available: ${limit - utilized}`);
+            }
+
+            // Increase utilization for segment
+            // Note: We'll persist this update if purchase succeeds
+            await Supplier.updateOne(
+              { _id: data.supplier, "financial.credit_segments.name": data.credit_segment_name },
+              { $inc: { "financial.credit_segments.$.utilized": data.grand_total } }
+            ).session(session);
+          }
+        } else {
+          // General Check
+          if (limit > 0 && (utilized + data.grand_total) > limit) {
+            throw new Error(`General credit limit exceeded. Available: ${limit - utilized}.`);
+          }
+        }
+      }
+    }
 
     /* ------------------------------------------------
    1. VALIDATE SUPPLIER/CUSTOMER + INPUT DATA
@@ -334,51 +118,54 @@ exports.createPurchase = async (req, res) => {
     if (!Array.isArray(data.purchasedItems) || data.purchasedItems.length === 0)
       throw new Error("No purchase items provided.");
 
-    /* ------------------------------------------------
-   2. RESOLVE VARIANTS
---------------------------------------------------*/
-    const allAttributes = await Attribute.find().session(session).lean();
-    const attrOrderMap = allAttributes.reduce((acc, curr) => {
-      acc[curr.key.toUpperCase()] = curr.order;
-      return acc;
-    }, {});
+    // Vendor Representation: Resolve ref_agent_name if ID provided
+    if (data.ref_agent_id) {
+      // STRICT: Fetch Supplier to validate Agent existence
+      const supplierDoc = await Supplier.findById(data.supplier).session(session);
+      if (!supplierDoc) throw new Error("Invalid Supplier ID.");
 
+      const agentContact = supplierDoc.contacts.find(c => c._id.toString() === data.ref_agent_id);
+
+      if (agentContact) {
+        data.ref_agent_name = agentContact.name; // Capture Snapshot
+
+        // Optional: Validate Credit Segment if one is claimed
+        if (data.credit_segment_name && data.credit_segment_name !== "General") {
+          const allowedSegment = supplierDoc.financial.credit_segments.find(s => s.name === data.credit_segment_name);
+          // If strict validation needed: ensure agent is linked to this segment (if you have agent_id in segment)
+          // For now, we just ensure the name is captured.
+        }
+      } else {
+        // Fallback or Strict Error? 
+        // User said: "System has registry but connection is severed". 
+        // If we receive an ID that's not in the supplier list, it's DATA DRIFT.
+        // SAFEST ACTION: Fail or Nullify? 
+        // Given "Financial Event Hazard", let's THROW if ID is invalid for this supplier.
+        throw new Error("Invalid Agent ID for the selected Supplier.");
+      }
+    } else {
+      // DIRECT PURCHASE (No Agent)
+      data.ref_agent_name = null;
+      data.ref_agent_id = null;
+    }
+
+    /* --- 1. STRICT VARIANT RESOLUTION (REPLACES SECTION 2) --- */
     for (const item of data.purchasedItems) {
-      if (item.isSerialized && item.variantAttributes) {
-        const baseItem = await Item.findById(item.item_id).session(session);
-        if (!baseItem) throw new Error("Base item not found.");
+      if (item.variant_id) {
+        // Validate selection; block auto-creation of ghost variants
+        const variant = await ItemVariant.findOne({
+          _id: item.variant_id,
+          item_id: item.item_id
+        }).session(session).lean();
 
-        const sortedAttrs = (item.variantAttributes || [])
-          .filter(a => a && a.value)
-          .sort((a, b) => {
-            const orderA = attrOrderMap[a.key.toUpperCase()] ?? 99;
-            const orderB = attrOrderMap[b.key.toUpperCase()] ?? 99;
-            return orderA - orderB;
-          });
+        if (!variant) {
+          throw new Error(`Variant Mismatch: ID ${item.variant_id} does not belong to Item ${item.item_id}`);
+        }
 
-        const attributesString = sortedAttrs
-          .map((a) => a.value.toUpperCase())
-          .join("-");
-
-        const variantName = attributesString
-          ? `${baseItem.itemName} - ${attributesString}`.trim()
-          : baseItem.itemName.trim();
-
-        const variant = await ItemVariant.findOneAndUpdate(
-          { item_id: item.item_id, variantName },
-          {
-            $setOnInsert: {
-              item_id: item.item_id,
-              variantAttributes: item.variantAttributes,
-              variantName,
-              defaultSellingPrice: item.sellingPrice,
-              lastUnitCost: item.unitCost,
-            },
-          },
-          { new: true, upsert: true, session }
-        );
-
-        item.variant_id = variant._id;
+        // Enforce consistent ID across serialized units
+        if (item.isSerialized && item.serializedItems) {
+          item.serializedItems.forEach(s => s.variant_id = variant._id);
+        }
       }
     }
 
@@ -390,16 +177,20 @@ exports.createPurchase = async (req, res) => {
       .substring(2, 8)}`;
 
     data.purchasedItems = data.purchasedItems.map((i) => {
-      if (i.isSerialized && i.serializedItems) {
-        i.serializedItems = i.serializedItems.map((s) => ({
+      // Ensure batch number on item level
+      const itemWithBatch = { ...i, batch_number: batchNo };
+
+      if (itemWithBatch.isSerialized && itemWithBatch.serializedItems) {
+        itemWithBatch.serializedItems = itemWithBatch.serializedItems.map((s) => ({
           ...s,
           batch_number: batchNo,
           variant_id: i.variant_id,
         }));
       }
-      return { ...i, batch_number: batchNo };
+      return itemWithBatch;
     });
 
+    if (data) data.batch_number = batchNo;
     /* ------------------------------------------------
    4. CREATE PURCHASE DOCUMENT
 --------------------------------------------------*/
@@ -407,146 +198,113 @@ exports.createPurchase = async (req, res) => {
     const purchaseDoc = purchase[0];
 
     /* ------------------------------------------------
-   5. UPDATE STOCK + STOCK LEDGER
+   5. UPDATE STOCK + STOCK LEDGER (CONDITIONAL)
+   Only execution if isStockUpdated is TRUE (Direct Purchase)
 --------------------------------------------------*/
-    for (const item of purchaseDoc.purchasedItems) {
-      if (item.isSerialized) {
-        // Serialized stock entries
-        for (const unit of item.serializedItems) {
-          await SerializedStock.create(
+    if (data.isStockUpdated) {
+      for (const item of purchaseDoc.purchasedItems) {
+        if (item.isSerialized) {
+          // Serialized stock entries
+          for (const unit of item.serializedItems) {
+            await SerializedStock.create(
+              [
+                {
+                  item_id: item.item_id,
+                  variant_id: unit.variant_id,
+                  purchase_id: purchaseDoc._id,
+                  purchaseDate: purchaseDoc.purchaseDate,
+                  serialNumber: unit.serialNumber,
+                  batch_number: batchNo,
+                  unitCost: unit.unitCost,
+                  sellingPrice: unit.sellingPrice,
+                  status: "Available",
+                  condition: unit.condition || "Brand New",
+                  batteryHealth: unit.batteryHealth,
+                },
+              ],
+              { session }
+            );
+
+            await logToLedger({
+              item_id: item.item_id,
+              variant_id: item.variant_id,
+              purchase_id: purchase[0]._id,
+              serialNumber: unit.serialNumber,
+              movementType: "Purchase-In",
+              qty: 1,
+              batch_number: item.batch_number,
+              unitCost: item.unitCost,
+              sellingPrice: item.sellingPrice,
+              memo: `Direct Purchase: ${purchase[0].referenceNumber}`,
+            }, session);
+          }
+        } else {
+          // Non-serialized
+          await NonSerializedStock.create(
             [
               {
                 item_id: item.item_id,
-                variant_id: unit.variant_id,
+                variant_id: item.variant_id || null,
                 purchase_id: purchaseDoc._id,
                 purchaseDate: purchaseDoc.purchaseDate,
-                serialNumber: unit.serialNumber,
+                purchaseQty: item.purchaseQty,
+                availableQty: item.purchaseQty,
+                unitCost: item.unitCost,
+                sellingPrice: item.sellingPrice,
                 batch_number: batchNo,
-                unitCost: unit.unitCost,
-                sellingPrice: unit.sellingPrice,
-                status: "Incoming",
-                condition: unit.condition || "Brand New",
+                status: "Available",
+                condition: item.condition || "Brand New",
               },
             ],
             { session }
           );
 
-          // await StockLedger.create(
-          //   [
-          //     {
-          //       item_id: item.item_id,
-          //       variant_id: unit.variant_id,
-          //       purchase_id: purchaseDoc._id,
-          //       movementType: "Purchase-In",
-          //       serialNumbers: [unit.serialNumber],
-          //       unitCost: unit.unitCost,
-          //       openingQty: 0,
-          //       closingQty: 1,
-          //       batch_number: batchNo,
-          //     },
-          //   ],
-          //   { session }
-          // );
-
-          // Ledger entry
-          const previousLedger = await StockLedger.findOne({
+          await logToLedger({
             item_id: item.item_id,
-          })
-            .sort({ createdAt: -1 })
-            .session(session)
-            .lean();
-
-          const ledgerEntry = exports.createStockLedgerEntry({
-            item_id: item.item_id,
-            variant_id: item.variant_id,
-            purchase_id: purchase[0]._id,
-            serialNumber: unit.serialNumber,
+            variant_id: item.variant_id || null,
             movementType: "Purchase-In",
-            qty: 1,
-            previousLedger,
+            qty: item.purchaseQty,
+            purchase_id: purchase[0]._id,
             batch_number: item.batch_number,
             unitCost: item.unitCost,
             sellingPrice: item.sellingPrice,
-            memo: `Purchase: ${purchase[0].referenceNumber}`,
-          });
-
-          await StockLedger.create([ledgerEntry], { session });
+            memo: `Direct Purchase: ${purchase[0].referenceNumber}`,
+          }, session);
         }
-      } else {
-        // Non-serialized
-        const existing = await NonSerializedStock.find({
-          item_id: item.item_id,
-          variant_id: item.variant_id || null,
-        }).session(session);
 
-        const opening = existing.reduce((s, e) => s + e.availableQty, 0);
-
-        await NonSerializedStock.create(
-          [
-            {
-              item_id: item.item_id,
-              variant_id: item.variant_id || null, // ✅ Added variant support
-              purchase_id: purchaseDoc._id,
-              purchaseDate: purchaseDoc.purchaseDate,
-
-              purchaseQty: item.purchaseQty,
-              availableQty: item.purchaseQty,
-              beforePurchaseAvailableQty: opening,
-              unitCost: item.unitCost,
-              sellingPrice: item.sellingPrice,
-              batch_number: batchNo,
-              status: "Incoming",
-              condition: item.condition || "Brand New",
-            },
-          ],
-          { session }
-        );
-
-        // await StockLedger.create(
-        //   [
-        //     {
-        //       item_id: item.item_id,
-        //       purchase_id: purchaseDoc._id,
-        //       movementType: "IN",
-        //       quantity: item.purchaseQty,
-        //       unitCost: item.unitCost,
-        //       openingQty: opening,
-        //       closingQty: opening + item.purchaseQty,
-        //       batch_number: batchNo,
-        //     },
-        //   ],
-        //   { session }
-        // );
-        // Ledger
-        const previousLedger = await StockLedger.findOne({
-          item_id: item.item_id,
-          variant_id: item.variant_id || null,
-        })
-          .sort({ createdAt: -1 })
-          .session(session)
-          .lean();
-
-        const ledgerEntry = exports.createStockLedgerEntry({
-          item_id: item.item_id,
-          variant_id: item.variant_id || null,
-          movementType: "Purchase-In",
-          qty: item.purchaseQty,
-          previousLedger,
-          purchase_id: purchase[0]._id,
-          batch_number: item.batch_number,
-          unitCost: item.unitCost,
-          sellingPrice: item.sellingPrice,
-          memo: `Purchase: ${purchase[0].referenceNumber}`,
-        });
-
-        await StockLedger.create([ledgerEntry], { session });
+        // --- SYNC SUMMARY & PRICING ---
+        await syncUpward(item.item_id, item.variant_id, session);
       }
     }
 
     /* ------------------------------------------------
     6. SUPPLIER ACCOUNT UPDATE (DEFERRED)
     --------------------------------------------------*/
-    // Finance update deferred to verification step
+    /* --- 2. CORRECT LIABILITY ACCOUNTING (Direct = Immediate) --- */
+    if (data.sourceType === 'DIRECT') {
+      const isLiability = partyAcc.account_type === 'Payable' || partyAcc.account_owner_type === 'Supplier';
+      const amount = data.grand_total;
+      const transactionType = "Withdrawal"; // Purchase is a withdrawal of credit/cash
+
+      // Deposits to a Payable account must DECREASE the debt (debit)
+      // Withdrawals from a Payable account must INCREASE the debt (credit)
+      const adjustment = (transactionType === "Deposit")
+        ? (isLiability ? -amount : amount)
+        : (isLiability ? amount : -amount);
+
+      partyAcc.balance += adjustment;
+      await partyAcc.save({ session });
+
+      // Record Transaction
+      await Transaction.create([{
+        account_id: partyAcc._id,
+        amount: amount,
+        transaction_type: transactionType,
+        reason: `Direct Purchase: ${purchaseDoc.referenceNumber}`,
+        transaction_date: new Date(),
+        balance_after_transaction: partyAcc.balance
+      }], { session });
+    }
 
 
 
@@ -630,8 +388,8 @@ exports.getAllPurchases = async (req, res) => {
   try {
     const purchases = await Purchase.find()
       .sort({ _id: -1 })
-      .populate("supplier", "business_name")
-      .populate("customer", "first_name last_name customer_id nic_number")
+      .populate("supplier")
+      .populate("customer")
       .populate("purchasedItems.item_id")
       .populate("purchasedItems.variant_id");
     res.status(200).json(purchases);
@@ -731,17 +489,37 @@ exports.verifyPurchasePhysical = async (req, res) => {
 
   try {
     const { id } = req.params;
-    const { actual_grand_total, verification_notes } = req.body;
+    const { actual_grand_total, verification_notes, verifiedItems, supplier_bill_no, bill_proof } = req.body;
 
     const purchase = await Purchase.findById(id).session(session);
     if (!purchase) throw new Error("Purchase not found");
     if (purchase.purchase_status !== "Pending Verification") {
-      throw new Error(`Purchase cannot be verified. Current status: ${purchase.purchase_status}`);
+      throw new Error(`Purchase already verified or cancelled. Status: ${purchase.purchase_status}`);
     }
 
+    /* --- 1. STRICT VARIANT RESOLUTION (REPLACES SECTION 2) --- */
+    for (const item of verifiedItems) {
+      if (item.variant_id) {
+        // Validate selection; block auto-creation of ghost variants
+        const variant = await ItemVariant.findOne({
+          _id: item.variant_id,
+          item_id: item.item_id
+        }).session(session).lean();
+
+        if (!variant) {
+          throw new Error(`Variant Mismatch: ID ${item.variant_id} does not belong to Item ${item.item_id}`);
+        }
+
+        // Enforce consistent ID across serialized units
+        if (item.isSerialized && item.serializedItems) {
+          item.serializedItems.forEach(s => s.variant_id = variant._id);
+        }
+      }
+    }
+
+    // 1. Resolve Party Account
     let accountOwnerType = "Supplier";
     let relatedPartyId = purchase.supplier;
-
     if (purchase.purchase_type === "Trade-In") {
       accountOwnerType = "Customer";
       relatedPartyId = purchase.customer;
@@ -752,28 +530,57 @@ exports.verifyPurchasePhysical = async (req, res) => {
       related_party_id: relatedPartyId,
     }).session(session);
 
-    if (!partyAcc) throw new Error(`${accountOwnerType} account not found`);
+    if (!partyAcc) throw new Error(`${accountOwnerType} account not found for ledger update.`);
 
+    // 2. Update Purchase Record with Verified Data
     const expectedTotal = purchase.grand_total;
     const discrepancy = actual_grand_total - expectedTotal;
 
-    // Update Purchase Record
-    purchase.purchase_status = discrepancy === 0 ? "Received" : "Discrepancy";
+    purchase.purchase_status = "Received";
     purchase.verification_date = new Date();
     purchase.verification_notes = verification_notes;
-    purchase.discrepancy_details = {
-      expected_grand_total: expectedTotal,
-      actual_grand_total: actual_grand_total,
-      mismatch_reason: verification_notes
-    };
+    purchase.grand_total = actual_grand_total;
+    purchase.supplier_bill_no = supplier_bill_no;
+    purchase.bill_proof = bill_proof;
+    purchase.isStockUpdated = true;
+
+    // Update purchasedItems with verified data (including resolved variants)
+    if (verifiedItems) {
+      purchase.purchasedItems = verifiedItems;
+    }
 
     await purchase.save({ session });
 
+    // 3. Create Stock and Ledger Entries
+    const batchNo = purchase.batch_number || `BATCH-${Date.now()}`;
 
-    // --- LOG LEDGER MOVEMENTS (Unlocking from Pipeline) ---
     for (const item of purchase.purchasedItems) {
       if (item.isSerialized) {
+        // Handle Serialized Items
         for (const unit of (item.serializedItems || [])) {
+          // Skip if not actually verified in frontend (guard)
+          if (unit.verified === false) continue;
+
+          await SerializedStock.create(
+            [
+              {
+                item_id: item.item_id,
+                variant_id: item.variant_id || unit.variant_id,
+                purchase_id: purchase._id,
+                purchaseDate: purchase.purchaseDate,
+                serialNumber: unit.serialNumber,
+                batch_number: batchNo,
+                unitCost: unit.unitCost,
+                sellingPrice: unit.sellingPrice,
+                status: "Available",
+                condition: unit.condition || "Brand New",
+                batteryHealth: unit.batteryHealth,
+              },
+            ],
+            { session }
+          );
+
+          // Ledger Entry
           const previousLedger = await StockLedger.findOne({ item_id: item.item_id })
             .sort({ createdAt: -1 })
             .session(session)
@@ -787,97 +594,101 @@ exports.verifyPurchasePhysical = async (req, res) => {
             movementType: "Purchase-In",
             qty: 1,
             previousLedger,
-            batch_number: item.batch_number,
+            batch_number: batchNo,
             unitCost: unit.unitCost,
             sellingPrice: unit.sellingPrice,
-            memo: `Verified Purchase: ${purchase.referenceNumber}`,
+            memo: `PO Verified: ${purchase.referenceNumber}`,
           });
           await StockLedger.create([ledgerEntry], { session });
         }
       } else {
-        const previousLedger = await StockLedger.findOne({
+        // Handle Non-Serialized
+        const existing = await NonSerializedStock.find({
           item_id: item.item_id,
           variant_id: item.variant_id || null,
-        })
-          .sort({ createdAt: -1 })
-          .session(session)
-          .lean();
+        }).session(session);
 
-        const ledgerEntry = exports.createStockLedgerEntry({
+        const opening = existing.reduce((s, e) => s + e.availableQty, 0);
+
+        await NonSerializedStock.create(
+          [
+            {
+              item_id: item.item_id,
+              variant_id: item.variant_id || null,
+              purchase_id: purchase._id,
+              purchaseDate: purchase.purchaseDate,
+              purchaseQty: item.verifiedQty || item.purchaseQty,
+              availableQty: item.verifiedQty || item.purchaseQty,
+              beforePurchaseAvailableQty: opening,
+              unitCost: item.unitCost,
+              sellingPrice: item.sellingPrice,
+              batch_number: batchNo,
+              status: "Available",
+              condition: item.condition || "Brand New",
+            },
+          ],
+          { session }
+        );
+
+        await logToLedger({
           item_id: item.item_id,
           variant_id: item.variant_id,
           purchase_id: purchase._id,
-          qty: item.purchaseQty,
+          qty: item.verifiedQty || item.purchaseQty,
           movementType: "Purchase-In",
-          previousLedger,
-          batch_number: item.batch_number,
+          batch_number: batchNo,
           unitCost: item.unitCost,
           sellingPrice: item.sellingPrice,
-          memo: `Verified Purchase: ${purchase.referenceNumber}`,
-        });
-        await StockLedger.create([ledgerEntry], { session });
+          memo: `PO Verified: ${purchase.referenceNumber}`,
+        }, session);
       }
+      // --- SYNC SUMMARY & PRICING ---
+      await syncUpward(item.item_id, item.variant_id, session);
     }
 
-    // Update Stock Status to Available based on Verification
-    // Assuming verification accepts all for now, or we can implement detailed item-level verification later
-    // For this pass, we unlock ALL stock related to this purchase
-    await SerializedStock.updateMany(
-      { purchase_id: purchase._id },
-      { $set: { status: "Available" } },
-      { session }
-    );
+    /* --- 2. CORRECT LIABILITY ACCOUNTING --- */
+    const isLiability = partyAcc.account_type === 'Payable' || partyAcc.account_owner_type === 'Supplier';
+    const amount = actual_grand_total;
+    const transactionType = "Withdrawal";
 
-    await NonSerializedStock.updateMany(
-      { purchase_id: purchase._id },
-      { $set: { status: "Available" } },
-      { session }
-    );
+    const adjustment = (transactionType === "Deposit")
+      ? (isLiability ? -amount : amount)
+      : (isLiability ? amount : -amount);
 
-    // Update Finance Ledger (Actual Received Amount)
-    partyAcc.balance -= actual_grand_total;
+    partyAcc.balance += adjustment;
     await partyAcc.save({ session });
 
     await Transaction.create(
       [
         {
           account_id: partyAcc._id,
-          amount: actual_grand_total * -1,
-          transaction_type: "Withdrawal",
-          reason: `Verified ${purchase.purchase_type}: ${purchase.referenceNumber} ${discrepancy !== 0 ? "(Discrepancy Logged)" : ""}`,
+          amount: actual_grand_total,
+          transaction_type: "Withdrawal", // Consistent with Buying on Credit habit
+          reason: `Verified PO: ${purchase.referenceNumber} ${discrepancy !== 0 ? "(Split/Adj)" : ""}`,
           balance_after_transaction: partyAcc.balance,
         },
       ],
       { session }
     );
 
-    // If discrepancy, log to DiscrepancyLog
-    if (discrepancy !== 0) {
-      const DiscrepancyLog = require("../models/DiscrepancyLog");
-      await DiscrepancyLog.create([
-        {
-          type: "Purchase",
-          category: discrepancy < 0 ? "Short Shipment" : "Over Shipment",
-          reference_id: purchase._id,
-          field_name: "grand_total",
-          expected_value: expectedTotal,
-          actual_value: actual_grand_total,
-          delta: discrepancy,
-          reason: verification_notes,
-          user_id: req.user?._id
-        }
-      ], { session });
-    }
+    // 5. Audit Log
+    await AuditLog.create([{
+      action: "PO_VERIFIED",
+      purchase_id: purchase._id,
+      performedBy: req.user?._id,
+      after: purchase,
+      description: `PO ${purchase.referenceNumber} converted to Verified Stock.`
+    }], { session });
 
     await session.commitTransaction();
     res.status(200).json({
-      message: "Purchase verified and stock finalized.",
+      message: "PO successfully verified. Stock is now available.",
       purchase,
       discrepancy
     });
 
   } catch (err) {
-    await session.abortTransaction();
+    if (session.inTransaction()) await session.abortTransaction();
     console.error("🔥 verifyPurchasePhysical ERROR:", err);
     res.status(500).json({ error: err.message });
   } finally {
@@ -888,10 +699,23 @@ exports.verifyPurchasePhysical = async (req, res) => {
 exports.getDuePurchaseBySupplierId = async (req, res) => {
   try {
     const { id } = req.params;
-    const purchases = await Purchase.find({
+    const { agent_id } = req.query;
+
+    const query = {
       supplier: id,
       payment_due_amount: { $gt: 0 },
-    })
+    };
+
+    if (agent_id) {
+      // If agent_id is "direct", we search for purchases where ref_agent_id is null/undefined
+      if (agent_id === "direct") {
+        // query.ref_agent_id = { $exists: false };
+      } else {
+        query.ref_agent_id = agent_id;
+      }
+    }
+
+    const purchases = await Purchase.find(query)
       .populate("supplier")
       .populate("purchasedItems.item_id")
       .sort({

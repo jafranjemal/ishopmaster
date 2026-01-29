@@ -12,7 +12,10 @@ const {
     checkBarcode,
 } = require('../controllers/productController');
 
+const { posSearch } = require('../controllers/inventorySearchController');
+
 // Routes
+router.get('/pos-search', posSearch); // Dedicated POS Search
 router.get('/', getProducts); // Get all products
 router.get('/check-name', checkItemName); // Check for duplicate names
 router.get('/check-barcode', checkBarcode); // Check for duplicate barcodes/SKUs

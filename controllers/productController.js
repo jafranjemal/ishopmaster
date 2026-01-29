@@ -1,8 +1,8 @@
 const Item = require('../models/Items');
-const Stock = require('../models/Stock');
 const SerializedStock = require('../models/SerializedStock');
 const NonSerializedStock = require('../models/NonSerializedStock');
 const ItemVariant = require('../models/ItemVariantSchema');
+const InventoryValidationService = require('../services/InventoryValidationService');
 const mongoose = require('mongoose');
 
 // Get all products with pagination, filtering, and sorting
@@ -210,13 +210,57 @@ const validateProductData = (data) => {
   }
 };
 
+const checkBarcodeAndVariantRules = async (productData, productId = null) => {
+  // Rule: If an item has variants, its `barcode` field must be null/empty.
+  // This is enforced by checking if variants exist for this item (or if it's a new item that might get variants).
+  // For an existing item, if a `barcode` is provided, we must ensure no variants exist for it.
+  // For a new item, we generally expect `barcode` to be null if it's intended for variants.
+
+  if (productData.barcode) {
+    let itemToCheck;
+    if (productId) {
+      // Existing item
+      itemToCheck = await Item.findById(productId);
+      if (!itemToCheck) {
+        throw new Error('Product not found for update.');
+      }
+    } else {
+      // New item - use the provided data for initial check
+      // The actual document will be created after this check
+      itemToCheck = { _id: null, ...productData }; // Simulate an item for variant check
+    }
+
+    // Check if variants exist for this item
+    const variantCount = await ItemVariant.countDocuments({ item_id: itemToCheck._id });
+    if (variantCount > 0) {
+      throw new Error('Barcode cannot be set on a product that has variants. Please clear the barcode or remove existing variants first.');
+    }
+  }
+};
+
 // Add a new product
 const addProduct = async (req, res) => {
   try {
     const productData = req.body;
 
+    // 🔥 FIX: Remove _id if it's null so Mongoose can generate a real one
+    if (productData._id === null || productData._id === "") {
+      delete productData._id;
+    }
+    if (productData.phoneModelId === null || productData.phoneModelId === "") {
+      delete productData.phoneModelId;
+    }
+
     // Validate input data
     validateProductData(productData);
+
+    // Check barcode rules for new product
+    try {
+      await InventoryValidationService.validateItemBarcodeAndVariantCompliance(productData);
+    } catch (err) {
+      console.error('Barcode validation error for new product:', err);
+      return res.status(400).json({ success: false, message: err.message });
+    }
 
     // Check for duplicate product (case-insensitive)
     const existingProduct = await Item.findOne({
@@ -233,18 +277,28 @@ const addProduct = async (req, res) => {
     const product = new Item(productData);
     const savedProduct = await product.save();
 
-    // --- Automatically create a DEFAULT variant ---
+    // --- Automatically create a DEFAULT variant (only if no variants will be created immediately) ---
+    // Note: This creates a default variant for items that don't have variants yet
+    // If the UI will immediately show a variant creation modal, this default variant might not be needed
     try {
-      await ItemVariant.create({
-        item_id: savedProduct._id,
-        variantName: 'DEFAULT',
-        variantAttributes: [],
-        sku: savedProduct.sku || null,
-        barcode: savedProduct.barcode || null,
-        defaultSellingPrice: savedProduct.pricing?.sellingPrice || 0,
-        lastUnitCost: savedProduct.lastUnitCost || 0
-      });
-      console.log(`Default variant created for item: ${savedProduct.itemName}`);
+      // Get the selling price from either pricing.sellingPrice or the root sellingPrice field
+      // Also check for direct sellingPrice in the original request data
+      const itemSellingPrice = savedProduct.pricing?.sellingPrice || savedProduct.sellingPrice || productData.sellingPrice || 0;
+      const itemLastUnitCost = savedProduct.lastUnitCost || savedProduct.costPrice || productData.costPrice || 0;
+
+      // Create default variant name as "BASE_ITEM_NAME DEFAULT"
+      const defaultVariantName = `${savedProduct.itemName} DEFAULT`;
+
+      // await ItemVariant.create({
+      //   item_id: savedProduct._id,
+      //   variantName: defaultVariantName,
+      //   variantAttributes: [],
+      //   sku: savedProduct.sku || null,
+      //   barcode: savedProduct.barcode || null,
+      //   defaultSellingPrice: itemSellingPrice,
+      //   lastUnitCost: itemLastUnitCost
+      // });
+      console.log(`Default variant created for item: ${savedProduct.itemName} with price: ${itemSellingPrice}`);
     } catch (variantErr) {
       console.error('Error creating default variant:', variantErr);
       // We don't fail the whole request if the variant fails, but it should ideally work.
@@ -254,7 +308,7 @@ const addProduct = async (req, res) => {
     res.status(201).json({
       success: true,
       message: 'Product created successfully',
-      data: savedProduct
+      data: savedProduct.toObject()
     });
   } catch (err) {
     console.error('Error adding product:', err);
@@ -326,6 +380,14 @@ const editProduct = async (req, res) => {
       return res.status(404).json({ message: 'Product not found' });
     }
 
+    // Check barcode rules for existing product update
+    try {
+      await InventoryValidationService.validateItemBarcodeAndVariantCompliance(req.body, productId);
+    } catch (err) {
+      console.error('Barcode validation error for product update:', err);
+      return res.status(400).json({ success: false, message: err.message });
+    }
+
     const updatedProduct = await Item.findByIdAndUpdate(productId, req.body, {
       new: true,
     });
@@ -359,15 +421,61 @@ const editProduct = async (req, res) => {
 
 // Delete an existing product
 const deleteProduct = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
     const { id } = req.params;
-    const deletedProduct = await Item.findByIdAndDelete(id);
+
+    // 1. Fetch all variant IDs to check their stock specifically
+    const variants = await ItemVariant.find({ item_id: id }).session(session);
+    const variantIds = variants.map(v => v._id);
+
+    // 2. Check for available stock across all sources for this item and its variants
+    const stockChecks = await Promise.all([
+      SerializedStock.countDocuments({
+        $or: [
+          { item_id: id },
+          { variant_id: { $in: variantIds } }
+        ]
+      }).session(session),
+      NonSerializedStock.countDocuments({
+        $or: [
+          { item_id: id },
+          { variant_id: { $in: variantIds } }
+        ]
+      }).session(session)
+    ]);
+
+    const totalAvailableStock = stockChecks.reduce((a, b) => a + b, 0);
+
+    if (totalAvailableStock > 0) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        message: `Cannot delete item. It has ${totalAvailableStock} stock records (including variants). Please clear stock first.`
+      });
+    }
+
+    // 2. Cascading Delete: Delete all variants associated with this item
+    await ItemVariant.deleteMany({ item_id: id }).session(session);
+
+    // 3. Delete the item itself
+    const deletedProduct = await Item.findByIdAndDelete(id).session(session);
+
     if (!deletedProduct) {
+      await session.abortTransaction();
       return res.status(404).json({ message: 'Product not found' });
     }
-    res.status(200).json({ message: 'Product deleted successfully' });
+
+    await session.commitTransaction();
+    res.status(200).json({ message: 'Product and associated variants deleted successfully' });
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    await session.abortTransaction();
+    console.error('deleteProduct error:', err);
+    res.status(500).json({ message: err.message });
+  } finally {
+    session.endSession();
   }
 };
 

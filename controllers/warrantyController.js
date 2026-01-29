@@ -16,7 +16,7 @@ exports.generateWarrantiesForInvoice = async (invoiceId) => {
 
     // Generate for serialized items
     for (const item of invoice.items) {
-        if (item.isSerialized && item.serialNumbers) {
+        if (item.isSerialized && item.serialNumbers && item.serialNumbers.length > 0) {
             for (const serial of item.serialNumbers) {
                 const duration = item.warranty || 0;
                 const unit = (item.warrantyUnit || "Days").toLowerCase();
@@ -35,25 +35,8 @@ exports.generateWarrantiesForInvoice = async (invoiceId) => {
                     end_date: endDate.toDate(),
                 });
             }
-        } else {
-            // Non-serialized items - 1 warranty record for the line item
-            const duration = item.warranty || 0;
-            const unit = (item.warrantyUnit || "Days").toLowerCase();
-            const startDate = moment();
-            const endDate = moment().add(duration, unit);
-
-            warranties.push({
-                invoice_id: invoice._id,
-                customer_id: invoice.customer,
-                item_id: item.item_id._id,
-                item_name: item.itemName,
-                type: "Product",
-                start_date: startDate.toDate(),
-                duration_days: duration,
-                end_date: endDate.toDate(),
-                notes: `Non-serialized | Qty: ${item.quantity}`
-            });
         }
+        // DELETED: Fallback for non-serialized items. No serial = No warranty record.
     }
 
     // Generate for service items

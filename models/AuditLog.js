@@ -13,14 +13,15 @@ const AuditLogSchema = new mongoose.Schema({
       "STOCK_ADJUSTED",
       "STOCK_DELETED",
       "ITEM_EDITED",
-      "ACCOUNT_UPDATED"
+      "ACCOUNT_UPDATED",
+      "PO_VERIFIED"
     ],
     required: true
   },
 
   reference_id: { type: mongoose.Schema.Types.ObjectId }, // purchase / item / account / stock
 
-  description: { type: String, required: false },  
+  description: { type: String, required: false },
   old_value: { type: Object },
   new_value: { type: Object },
 

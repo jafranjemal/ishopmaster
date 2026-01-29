@@ -23,4 +23,11 @@ router.post('/initialize', systemController.initializeSystem);
  */
 router.get('/info', systemController.getSystemInfo);
 
+/**
+ * @route   GET /api/system/fix-variant-tracking
+ * @desc    Migration: Repair variants missing stockTracking configuration
+ * @access  Public (Temporary Migration Route)
+ */
+router.get('/fix-variant-tracking', systemController.fixVariantStockTracking);
+
 module.exports = router;

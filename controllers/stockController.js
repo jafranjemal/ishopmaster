@@ -236,7 +236,8 @@ exports.getAllItemsWithStock = async (req, res) => {
         batches: batchDetails,
         lastUnitCost: item.lastUnitCost,
         lastSellingPrice: item.lastSellingPrice,
-        serialized: item.itemDetails.serialized
+        serialized: item.itemDetails.serialized,
+
       };
     });
 
@@ -244,6 +245,337 @@ exports.getAllItemsWithStock = async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Error fetching items and stock", error: err.message });
+  }
+};
+
+exports.getRestockSuggestions_legacy = async (req, res) => {
+  try {
+    // 1. Dual Query: Find Low Stock Base Items AND Variants
+    const [lowStockItems, lowStockVariants] = await Promise.all([
+      Items.find({
+        $expr: { $lte: ["$stockTracking.availableForSale", "$stockTracking.reorderPoint"] },
+        // category: { $ne: "Device" } // Optional: Exclude devices if they should only be tracked via variants
+      })
+        .populate("stockTracking.preferredSupplier", "business_name contact_info")
+        .lean(),
+
+      ItemVariant.find({
+        $expr: { $lte: ["$stockTracking.availableForSale", "$stockTracking.reorderPoint"] }
+      })
+        .populate("item_id", "itemName category itemImage")
+        .populate("stockTracking.preferredSupplier", "business_name contact_info")
+        .lean()
+    ]);
+
+    // 2. Normalize Data Structure
+    const allSuggestions = [
+      ...lowStockItems.map(i => ({ ...i, isVariant: false, variant_id: null })),
+      ...lowStockVariants
+        .filter(v => v.item_id) // Safety filter for orphaned variants
+        .map(v => ({
+          ...v,
+          _id: v.item_id._id, // Mapped to Base Item ID for consistent linking
+          variant_id: v._id,
+          itemName: `${v.item_id.itemName} - ${v.variantName}`,
+          itemImage: v.variantImage || v.item_id.itemImage,
+          category: v.item_id.category,
+          costPrice: v.lastUnitCost,
+          isVariant: true,
+          pricing: { sellingPrice: v.defaultSellingPrice }
+        }))
+    ];
+
+    if (allSuggestions.length === 0) {
+      return res.status(200).json([]);
+    }
+
+    // 3. Enrich with Historical Supplier/Agent
+    const enrichedItems = await Promise.all(allSuggestions.map(async (item) => {
+      let supplierId = item.stockTracking?.preferredSupplier?._id;
+      let supplierName = item.stockTracking?.preferredSupplier?.business_name;
+      let agentId = null;
+      let agentName = "";
+
+      if (!supplierId) {
+        // Find last purchase
+        const query = { "purchasedItems.item_id": item._id };
+        if (item.isVariant) query["purchasedItems.variant_id"] = item.variant_id;
+
+        const lastPurchase = await Purchase.findOne(query)
+          .sort({ purchaseDate: -1 })
+          .populate("supplier", "business_name")
+          .lean();
+
+        if (lastPurchase) {
+          supplierId = lastPurchase.supplier?._id;
+          supplierName = lastPurchase.supplier?.business_name;
+          agentId = lastPurchase.ref_agent_id;
+          agentName = lastPurchase.ref_agent_name;
+        }
+      }
+
+      return {
+        ...item,
+        suggestedSupplierId: supplierId || "unassigned",
+        suggestedSupplierName: supplierName || "Unassigned / New Supplier",
+        suggestedAgentId: agentId || "direct",
+        suggestedAgentName: agentName || "Direct / Primary"
+      };
+    }));
+
+    // 4. THE GHOST FILTER (Exclude Orphans)
+    // Remove items that have NO Preferred Supplier AND NO Purchase History
+    const validItems = enrichedItems.filter(item => {
+      // Keep if user explicitly set a preferred supplier (Strong Intent)
+      if (item.stockTracking?.preferredSupplier) return true;
+
+      // Keep if we found a historical supplier from previous purchases (Proven History)
+      if (item.suggestedSupplierId !== "unassigned") return true;
+
+      // Otherwise, it's a "Ghost Item" (Never bought, no config) -> DROP IT
+      return false;
+    });
+
+    // 5. Group by Supplier + Agent Combo
+    const grouped = validItems.reduce((acc, item) => {
+      const sId = item.suggestedSupplierId.toString();
+      const aId = item.suggestedAgentId.toString();
+      const groupKey = `${sId}_${aId}`;
+
+      if (!acc[groupKey]) {
+        acc[groupKey] = {
+          supplierId: sId === "unassigned" ? null : sId,
+          supplierName: item.suggestedSupplierName,
+          agentId: aId === "direct" ? null : aId,
+          agentName: item.suggestedAgentName,
+          items: []
+        };
+      }
+      acc[groupKey].items.push(item);
+      return acc;
+    }, {});
+
+    res.status(200).json(Object.values(grouped));
+  } catch (err) {
+    console.error("🔥 getRestockSuggestions ERROR:", err);
+    res.status(500).json({ message: "Error fetching suggestions", error: err.message });
+  }
+};
+
+
+exports.getRestockSuggestions = async (req, res) => {
+  try {
+    // 1. BROAD SEARCH CRITERIA (Capture potential low stock via Cache or Legacy fields)
+    const thresholdExpr = {
+      $cond: [
+        { $gt: [{ $ifNull: ["$stockTracking.reorderPoint", 0] }, 0] },
+        "$stockTracking.reorderPoint",
+        { $convert: { input: "$alertQuantity", to: "double", onError: 0, onNull: 0 } }
+      ]
+    };
+
+    const searchCriteria = {
+      $expr: {
+        $let: {
+          vars: { threshold: thresholdExpr },
+          in: {
+            $and: [
+              { $gt: ["$$threshold", 0] },
+              {
+                $lte: [
+                  { $ifNull: ["$stockTracking.availableForSale", { $ifNull: ["$availableQty", 0] }] },
+                  "$$threshold"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    };
+
+    // 2. FETCH CANDIDATES
+    const [baseItems, variants] = await Promise.all([
+      Item.find(searchCriteria).populate("stockTracking.preferredSupplier").lean(),
+      ItemVariant.find(searchCriteria).populate("item_id").populate("stockTracking.preferredSupplier").lean()
+    ]);
+
+    const itemIds = [...new Set([...baseItems.map(i => i._id), ...variants.map(v => v.item_id?._id)].filter(Boolean))];
+
+    // 3. BULK AGGREGATE REAL-TIME TRUTH (The "Laser" Fix for 0 vs 1 issues)
+    const [serStock, nonSerStock] = await Promise.all([
+      SerializedStock.aggregate([
+        { $match: { item_id: { $in: itemIds }, status: { $in: ["Available", "On Hold", "Damaged", "Reserved"] } } },
+        {
+          $group: {
+            _id: { i: "$item_id", v: { $ifNull: ["$variant_id", null] } },
+            available: { $sum: { $cond: [{ $eq: ["$status", "Available"] }, 1, 0] } },
+            physical: { $sum: 1 }
+          }
+        }
+      ]),
+
+
+      NonSerializedStock.aggregate([
+        { $match: { item_id: { $in: itemIds }, availableQty: { $gt: 0 } } },
+        {
+          $group: {
+            _id: { i: "$item_id", v: { $ifNull: ["$variant_id", null] } },
+            totalAvailable: { $sum: "$availableQty" }
+          }
+        }
+      ])
+    ]);
+
+    const stockMap = new Map();
+    // Explicit stringification of keys to prevent lookup failure
+    serStock.forEach(s => {
+      const key = `${s._id.i.toString()}_${s._id.v ? s._id.v.toString() : "null"}`;
+      stockMap.set(key, { a: s.available, p: s.physical });
+    });
+
+    nonSerStock.forEach(n => {
+      const key = `${n._id.i.toString()}_${n._id.v ? n._id.v.toString() : "null"}`; // issue fixed:The "zero stock" discrepancy is caused by ObjectId vs. String mismatches in the Map keys and incorrect property access on populated objects.
+      const existing = stockMap.get(key) || { a: 0, p: 0 };
+      stockMap.set(key, { a: existing.a + n.totalAvailable, p: existing.p + n.totalAvailable });
+    });
+
+    // 4. NORMALIZE & FINAL FILTER
+    const allCandidates = [...baseItems.map(i => ({ ...i, type: 'BASE' })), ...variants.map(v => ({ ...v, type: 'VARIANT' }))];
+
+    const suggestions = allCandidates.map(c => {
+      // Correct ID extraction: variants have item_id object, base has _id
+      const iId = (c.type === 'BASE' ? c._id : (c.item_id?._id || c.item_id))?.toString();
+      const vId = (c.type === 'VARIANT' ? c._id.toString() : "null");
+      if (!iId) return null;
+      const realStock = stockMap.get(`${iId}_${vId}`) || { a: 0, p: 0 };
+
+      const threshold = c.stockTracking?.reorderPoint > 0
+        ? c.stockTracking.reorderPoint
+        : parseFloat(c.alertQuantity || 0);
+
+      if (realStock.a > threshold) return null; // Filter out false positives from stale cache
+
+      return {
+        ...c,
+        calculatedStock: { available: realStock.a, physical: realStock.p, threshold },
+        totalStock: realStock.p,
+        stockTracking: {
+          ...c.stockTracking,
+          availableForSale: realStock.a,
+          currentStock: realStock.p,
+          reorderPoint: threshold
+        },
+        targetQty: Math.max(0, (threshold * 2) - realStock.a)
+      };
+    }).filter(Boolean);
+
+    // 5. SUPPLIER & AGENT RESOLUTION (Optimized for performance)
+    const itemsNeedingHistory = suggestions.filter(i => !i.stockTracking?.preferredSupplier);
+    const historyMap = {};
+
+    if (itemsNeedingHistory.length > 0) {
+      const variantIds = itemsNeedingHistory.filter(i => i.type === 'VARIANT').map(i => new mongoose.Types.ObjectId(i._id));
+      const baseIds = itemsNeedingHistory.filter(i => i.type === 'BASE').map(i => new mongoose.Types.ObjectId(i._id));
+
+      const recentPurchases = await Purchase.find({
+        $or: [
+          { "purchasedItems.variant_id": { $in: variantIds } },
+          { "purchasedItems.item_id": { $in: baseIds } }
+        ]
+      })
+        .sort({ purchaseDate: -1 })
+        .limit(500)
+        .populate("supplier", "business_name contact_info contacts")
+        .lean();
+
+      itemsNeedingHistory.forEach(item => {
+        const idToMatch = item._id.toString();
+        const match = recentPurchases.find(p =>
+          p.purchasedItems.some(pi => {
+            if (item.type === 'VARIANT') return pi.variant_id?.toString() === idToMatch;
+            return pi.item_id?.toString() === idToMatch && !pi.variant_id;
+          })
+        );
+        if (match) historyMap[idToMatch] = match;
+      });
+    }
+
+    const groupedResult = suggestions.reduce((acc, item) => {
+      let supplierId, supplierName, agentId, agentName, contactNumber, agentContact = "";
+      const prefSup = item.stockTracking?.preferredSupplier;
+
+      // Priority 1: Preferred Supplier from Master Data
+      if (prefSup) {
+        supplierId = prefSup._id;
+        supplierName = prefSup.business_name;
+        contactNumber = prefSup.contact_info?.contact_number;
+        agentId = item.stockTracking?.preferredAgentId || "direct";
+        agentName = "Direct / Primary";
+        if (agentId !== "direct" && prefSup.contacts) {
+          const agent = prefSup.contacts.find(c => c._id?.toString() === agentId.toString());
+          if (agent) {
+            agentName = agent.name;
+            agentContact = agent.phone;
+          }
+        }
+      }
+      // Priority 2: Supplier from Purchase History
+      else {
+        const lastPurchase = historyMap[item._id.toString()];
+        if (lastPurchase) {
+          supplierId = lastPurchase.supplier?._id;
+          supplierName = lastPurchase.supplier?.business_name;
+          contactNumber = lastPurchase.supplier?.contact_info?.contact_number;
+          agentId = lastPurchase.ref_agent_id || "direct";
+          agentName = lastPurchase.ref_agent_name || "Direct / Primary";
+          if (agentId !== "direct" && lastPurchase.supplier?.contacts) {
+            const agent = lastPurchase.supplier.contacts.find(c => c._id?.toString() === agentId.toString());
+            agentContact = agent?.phone || "";
+          }
+        }
+      }
+
+      if (supplierId) {
+        const sIdStr = supplierId.toString();
+        const aIdStr = agentId.toString();
+        const groupKey = `${sIdStr}_${aIdStr}`;
+
+        if (!acc[groupKey]) {
+          acc[groupKey] = {
+            supplierId: sIdStr,
+            supplierName: supplierName || "Unknown",
+            supplierContact: contactNumber || "",
+            agentId: aIdStr === "direct" ? null : aIdStr,
+            agentName,
+            contactNumber: agentContact || contactNumber || "",
+            items: []
+          };
+        }
+
+        // Normalize naming for Variants vs Base Items
+        let displayName = item.type === 'VARIANT' ? item.variantName : item.itemName;
+        displayName = displayName || "Unnamed Item";
+
+        if (item.type === 'VARIANT' && item.item_id) {
+          const baseName = item.item_id.itemName || "";
+          if (baseName && !displayName.toLowerCase().startsWith(baseName.toLowerCase())) {
+            displayName = `${baseName} - ${displayName}`;
+          }
+        }
+
+        acc[groupKey].items.push({
+          ...item,
+          itemName: displayName,
+          targetQty: Math.max(0, (item.calculatedStock.threshold * 2) - item.calculatedStock.available)
+        });
+      }
+      return acc;
+    }, {});
+
+    res.status(200).json(Object.values(groupedResult));
+  } catch (err) {
+    console.error("🔥 getRestockSuggestions ERROR:", err);
+    res.status(500).json({ message: "Error fetching suggestions", error: err.message });
   }
 };
 
@@ -1119,7 +1451,7 @@ exports.getUnifiedStock3 = async (req, res) => {
 };
 
 // Controller: getUnifiedStock (variant-first, field-complete, correct totals)
-exports.getUnifiedStock = async (req, res) => {
+exports.getUnifiedStock111111 = async (req, res) => {
   try {
     const { search, page, limit, category, includeEmptyBase } = req.query;
 
@@ -1192,12 +1524,18 @@ exports.getUnifiedStock = async (req, res) => {
     const nonSerializedStocks = await NonSerializedStock.aggregate([
       {
         $group: {
-          _id: "$item_id",
-          item_id: { $last: "$item_id" },
+          _id: {
+            item_id: "$item_id",
+            variant_id: { $ifNull: ["$variant_id", null] },
+          },
+          item_id: { $first: "$item_id" },
+          variant_id: { $first: "$variant_id" },
+
           totalStock: { $sum: "$availableQty" },
           totalSold: { $sum: "$soldQty" },
           lastSellingPrice: { $last: "$sellingPrice" },
           lastUnitCost: { $last: "$unitCost" },
+
           batches: {
             $push: {
               batch_number: "$batch_number",
@@ -1210,7 +1548,9 @@ exports.getUnifiedStock = async (req, res) => {
           },
         },
       },
+
       { $unwind: "$batches" },
+
       {
         $lookup: {
           from: "purchases",
@@ -1220,6 +1560,7 @@ exports.getUnifiedStock = async (req, res) => {
         },
       },
       { $unwind: { path: "$purchase_info", preserveNullAndEmptyArrays: true } },
+
       {
         $lookup: {
           from: "suppliers",
@@ -1229,17 +1570,23 @@ exports.getUnifiedStock = async (req, res) => {
         },
       },
       { $unwind: { path: "$supplier_info", preserveNullAndEmptyArrays: true } },
+
       { $sort: { "batches.purchaseDate": -1 } },
+
       {
         $group: {
-          _id: "$item_id",
+          _id: "$_id", // keep composite key
+          item_id: { $first: "$item_id" },
+          variant_id: { $first: "$variant_id" },
           totalStock: { $first: "$totalStock" },
           totalSold: { $first: "$totalSold" },
           lastSellingPrice: { $first: "$lastSellingPrice" },
           lastUnitCost: { $first: "$lastUnitCost" },
+
           batches: {
             $push: {
               item_id: "$item_id",
+              variant_id: "$variant_id",
               batch_number: "$batches.batch_number",
               availableQty: "$batches.availableQty",
               purchaseDate: "$batches.purchaseDate",
@@ -1253,6 +1600,7 @@ exports.getUnifiedStock = async (req, res) => {
         },
       },
     ]);
+
 
     const nonSerMap = new Map(
       nonSerializedStocks.map((ns) => [String(ns._id), ns])
@@ -1384,6 +1732,12 @@ exports.getUnifiedStock = async (req, res) => {
       const itemKey = String(item._id);
       const variants = variantsByItem[itemKey] || [];
 
+      const hasVariantStock = variants.some((v) => {
+        const k = `${itemKey}__${String(v._id)}`;
+        const ag = serMap.get(k);
+        return ag && ag.totalAvailable > 0;
+      });
+
       if (variants.length > 0) {
         // Replace base item with one row per variant (even if stock = 0)
         for (const v of variants) {
@@ -1429,10 +1783,17 @@ exports.getUnifiedStock = async (req, res) => {
         // This prevents showing a redundant "Base" row for items that are fully variant-tracked.
         const serNoVar = serMap.get(`${itemKey}__null`);
         const ns = nonSerMap.get(itemKey);
-        if (
-          (ns && ns.totalStock > 0) ||
-          (serNoVar && serNoVar.totalAvailable > 0) ||
-          includeEmptyBase === "true"
+
+        const shouldShowBase =
+          // Only if NO variant has stock
+          !hasVariantStock &&
+          (
+            (ns && ns.totalStock > 0) ||
+            (serNoVar && serNoVar.totalAvailable > 0) ||
+            includeEmptyBase === "true"
+          );
+
+        if (shouldShowBase
         ) {
           result.push({
             ...item,
@@ -1445,11 +1806,25 @@ exports.getUnifiedStock = async (req, res) => {
             itemName: item.itemName,
             variantName: null,
             variantAttributes: [],
-            totalStock: (ns?.totalStock || 0) + (serNoVar?.totalAvailable || 0),
-            lastSellingPrice: serNoVar?.lastSellingPrice || ns?.lastSellingPrice || item.pricing?.sellingPrice || 0,
-            lastUnitCost: serNoVar?.lastUnitCost || ns?.lastUnitCost || 0,
-            batches: [...(ns?.batches || []), ...(serNoVar?.batches || [])].sort((a, b) => new Date(b.purchaseDate) - new Date(a.purchaseDate)),
-            serializedItems: (serNoVar?.batches || []).sort((a, b) => new Date(b.purchaseDate) - new Date(a.purchaseDate)),
+            totalStock:
+              (ns?.totalStock || 0) +
+              (serNoVar?.totalAvailable || 0),
+            lastSellingPrice:
+              serNoVar?.lastSellingPrice ||
+              ns?.lastSellingPrice ||
+              item.pricing?.sellingPrice ||
+              0,
+            lastUnitCost:
+              serNoVar?.lastUnitCost ||
+              ns?.lastUnitCost ||
+              0,
+            batches: [
+              ...(ns?.batches || []),
+              ...(serNoVar?.batches || []),
+            ].sort((a, b) => new Date(b.purchaseDate) - new Date(a.purchaseDate)),
+            serializedItems: (serNoVar?.batches || []).sort(
+              (a, b) => new Date(b.purchaseDate) - new Date(a.purchaseDate)
+            ),
           });
         }
       } else {
@@ -1498,6 +1873,481 @@ exports.getUnifiedStock = async (req, res) => {
   }
 };
 
+exports.getUnifiedStock_legacy = async (req, res) => {
+  try {
+    const { search, page, limit, category, includeEmptyBase } = req.query;
+
+    /* -------------------------------------------------
+       1) LOAD ITEMS
+    -------------------------------------------------- */
+    let query = {};
+    if (category && category !== "All") query.category = category;
+
+    if (search) {
+      const tokens = search.split(/\s+/).filter(Boolean);
+      if (tokens.length) {
+        const regexes = tokens.map(t => new RegExp(t, "i"));
+        query.$or = [
+          { itemName: { $in: regexes } },
+          { barcode: { $in: regexes } },
+        ];
+      }
+    }
+
+    let itemsQuery = Items.find(query).lean();
+    if (page && limit) {
+      itemsQuery = itemsQuery
+        .skip((+page - 1) * +limit)
+        .limit(+limit);
+    }
+
+    const items = await itemsQuery;
+    const itemIds = items.map(i => i._id);
+
+    /* -------------------------------------------------
+       2) LOAD VARIANTS
+    -------------------------------------------------- */
+    const variants = await ItemVariant.find({
+      item_id: { $in: itemIds },
+    }).lean();
+
+    const variantsByItem = variants.reduce((acc, v) => {
+      const k = String(v.item_id);
+      acc[k] ??= [];
+      acc[k].push(v);
+      return acc;
+    }, {});
+
+    /* -------------------------------------------------
+       3) NON-SERIALIZED STOCK (VARIANT-AWARE)
+    -------------------------------------------------- */
+    const nonSerializedStocks = await NonSerializedStock.aggregate([
+      {
+        $group: {
+          _id: {
+            item_id: "$item_id",
+            variant_id: { $ifNull: ["$variant_id", null] },
+          },
+          item_id: { $first: "$item_id" },
+          variant_id: { $first: "$variant_id" },
+          totalStock: { $sum: "$availableQty" },
+          lastSellingPrice: { $last: "$sellingPrice" },
+          lastUnitCost: { $last: "$unitCost" },
+        },
+      },
+    ]);
+
+    const nonSerMap = new Map(
+      nonSerializedStocks.map(ns => [
+        `${String(ns.item_id)}__${ns.variant_id ? String(ns.variant_id) : "null"}`,
+        ns,
+      ])
+    );
+
+    /* -------------------------------------------------
+       4) SERIALIZED STOCK (VARIANT-AWARE)
+    -------------------------------------------------- */
+    const serializedAgg = await SerializedStock.aggregate([
+      { $match: { status: "Available", item_id: { $in: itemIds } } },
+      {
+        $group: {
+          _id: {
+            item_id: "$item_id",
+            variant_id: { $ifNull: ["$variant_id", null] },
+          },
+          item_id: { $first: "$item_id" },
+          variant_id: { $first: "$variant_id" },
+          totalAvailable: { $sum: 1 },
+          lastSellingPrice: { $last: "$sellingPrice" },
+          lastUnitCost: { $last: "$unitCost" },
+        },
+      },
+    ]);
+
+    const serMap = new Map(
+      serializedAgg.map(s => [
+        `${String(s.item_id)}__${s.variant_id ? String(s.variant_id) : "null"}`,
+        s,
+      ])
+    );
+
+    /* -------------------------------------------------
+       5) BUILD FINAL RESULT (STRICT RULES)
+    -------------------------------------------------- */
+    const result = [];
+
+    for (const item of items) {
+      const itemKey = String(item._id);
+      const itemVariants = variantsByItem[itemKey] || [];
+
+      /* ---------- VARIANT ROWS ---------- */
+      if (itemVariants.length) {
+        for (const v of itemVariants) {
+          const k = `${itemKey}__${v._id}`;
+          const ser = serMap.get(k);
+          const ns = nonSerMap.get(k);
+
+          result.push({
+            ...item,
+            uId: `${itemKey}_${v._id}`,
+            isVariant: true,
+            isBase: false,
+            variant_id: v._id,
+            itemName: v.variantName,
+            itemImage: v.variantImage || item.itemImage, // Variant-specific image
+            variantAttributes: v.variantAttributes, // Include attributes for UI
+            sku: v.sku,
+            barcode: v.barcode || item.barcode,
+            totalStock:
+              (ser?.totalAvailable || 0) +
+              (ns?.totalStock || 0),
+            lastSellingPrice:
+              ser?.lastSellingPrice ??
+              ns?.lastSellingPrice ??
+              v.defaultSellingPrice ??
+              0,
+            lastUnitCost:
+              ser?.lastUnitCost ??
+              ns?.lastUnitCost ??
+              0,
+          });
+        }
+
+        /* ---------- BASE ROW (HARD BLOCK) ---------- */
+        const hasAnyVariantStock = itemVariants.some(v => {
+          const k = `${itemKey}__${v._id}`;
+          return (
+            (serMap.get(k)?.totalAvailable || 0) > 0 ||
+            (nonSerMap.get(k)?.totalStock || 0) > 0
+          );
+        });
+
+        const baseKey = `${itemKey}__null`;
+        const baseSer = serMap.get(baseKey);
+        const baseNs = nonSerMap.get(baseKey);
+
+        if (
+          !hasAnyVariantStock &&
+          (
+            (baseSer?.totalAvailable || 0) > 0 ||
+            (baseNs?.totalStock || 0) > 0 ||
+            includeEmptyBase === "true"
+          )
+        ) {
+          result.push({
+            ...item,
+            uId: `${itemKey}_base`,
+            isVariant: false,
+            isBase: true,
+            variant_id: null,
+            itemName: item.itemName,
+            itemImage: item.itemImage,
+            serializedItems: ser?.stockUnits || [],
+            batches: [...(ns?.batches || []), ...(ser?.batches || [])],
+            totalStock:
+              (baseSer?.totalAvailable || 0) +
+              (baseNs?.totalStock || 0),
+            lastSellingPrice:
+              baseSer?.lastSellingPrice ??
+              baseNs?.lastSellingPrice ??
+              0,
+            lastUnitCost:
+              baseSer?.lastUnitCost ??
+              baseNs?.lastUnitCost ??
+              0,
+          });
+        }
+      }
+
+      /* ---------- NO VARIANTS ---------- */
+      else {
+        const k = `${itemKey}__null`;
+        const ser = serMap.get(k);
+        const ns = nonSerMap.get(k);
+
+        result.push({
+          ...item,
+          uId: `${itemKey}_base`,
+          isVariant: false,
+          isBase: true,
+          variant_id: null,
+          itemName: item.itemName,
+          itemImage: item.itemImage,
+          serializedItems: ser?.stockUnits || [],
+          batches: [...(ns?.batches || []), ...(ser?.batches || [])],
+          totalStock:
+            (ser?.totalAvailable || 0) +
+            (ns?.totalStock || 0),
+          lastSellingPrice:
+            ser?.lastSellingPrice ??
+            ns?.lastSellingPrice ??
+            0,
+          lastUnitCost:
+            ser?.lastUnitCost ??
+            ns?.lastUnitCost ??
+            0,
+        });
+      }
+    }
+
+    res.json(result);
+  } catch (err) {
+    console.error("getUnifiedStock error:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+exports.getUnifiedStock = async (req, res) => {
+  try {
+    const { search, page, limit, category } = req.query;
+
+    /* -------------------------------------------------
+       1) LOAD ITEMS (VARIANT-AWARE SEARCH)
+    -------------------------------------------------- */
+    let query = {};
+    if (category && category !== "All") query.category = category;
+
+    if (search) {
+      const tokens = search.split(/\s+/).filter(Boolean);
+      if (tokens.length) {
+        const regexes = tokens.map((t) => new RegExp(t, "i"));
+
+        // Find matching Base Items
+        const baseMatches = await Items.find({
+          $or: [
+            { itemName: { $in: regexes } },
+            { barcode: { $in: regexes } },
+          ]
+        }).select('_id').lean();
+
+        // Find matching Variants
+        const variantMatches = await ItemVariant.find({
+          $or: [
+            { variantName: { $in: regexes } },
+            { barcode: { $in: regexes } },
+            { sku: { $in: regexes } }
+          ]
+        }).select('item_id').lean();
+
+        const ids = [
+          ...baseMatches.map(i => i._id),
+          ...variantMatches.map(v => v.item_id)
+        ];
+
+        query._id = { $in: ids };
+      }
+    }
+
+    let itemsQuery = Items.find(query).lean();
+    if (page && limit) {
+      itemsQuery = itemsQuery.skip((+page - 1) * +limit).limit(+limit);
+    }
+
+    const items = await itemsQuery;
+    const itemIds = items.map((i) => i._id);
+
+    /* -------------------------------------------------
+       2) LOAD VARIANTS
+    -------------------------------------------------- */
+    const variants = await ItemVariant.find({
+      item_id: { $in: itemIds },
+    }).lean();
+
+    const variantsByItem = variants.reduce((acc, v) => {
+      const k = String(v.item_id);
+      acc[k] ??= [];
+      acc[k].push(v);
+      return acc;
+    }, {});
+
+    /* -------------------------------------------------
+       3) SERIALIZED STOCK AGGREGATION
+    -------------------------------------------------- */
+    const serializedAgg = await SerializedStock.aggregate([
+      { $match: { status: "Available", item_id: { $in: itemIds } } },
+      {
+        $lookup: {
+          from: "purchases",
+          localField: "purchase_id",
+          foreignField: "_id",
+          as: "purchase"
+        }
+      },
+      { $unwind: { path: "$purchase", preserveNullAndEmptyArrays: true } },
+      { $sort: { purchaseDate: 1 } },
+      {
+        $group: {
+          _id: {
+            item_id: "$item_id",
+            variant_id: { $ifNull: ["$variant_id", null] },
+          },
+          totalAvailable: { $sum: 1 },
+          lastSellingPrice: { $last: "$sellingPrice" },
+          lastUnitCost: { $last: "$unitCost" },
+          stockUnits: {
+            $push: {
+              _id: "$_id",
+              serialNumber: "$serialNumber",
+              batch_number: "$batch_number",
+              condition: "$condition",
+              batteryHealth: "$batteryHealth",
+              unitCost: "$unitCost",
+              sellingPrice: "$sellingPrice",
+              purchaseDate: "$purchaseDate",
+              purchase: "$purchase",
+              purchase_id: "$purchase_id"
+            },
+          },
+        },
+      },
+    ]);
+
+    const serMap = new Map(
+      serializedAgg.map((s) => [
+        `${String(s._id.item_id)}__${s._id.variant_id ? String(s._id.variant_id) : "null"}`,
+        s,
+      ])
+    );
+
+    /* -------------------------------------------------
+       4) NON-SERIALIZED STOCK AGGREGATION
+    -------------------------------------------------- */
+    const nonSerializedStocks = await NonSerializedStock.aggregate([
+      { $match: { availableQty: { $gt: 0 }, item_id: { $in: itemIds } } },
+      {
+        $lookup: {
+          from: "purchases",
+          localField: "purchase_id",
+          foreignField: "_id",
+          as: "purchase"
+        }
+      },
+      { $unwind: { path: "$purchase", preserveNullAndEmptyArrays: true } },
+      {
+        $group: {
+          _id: {
+            item_id: "$item_id",
+            variant_id: { $ifNull: ["$variant_id", null] },
+          },
+          totalStock: { $sum: "$availableQty" },
+          lastSellingPrice: { $last: "$sellingPrice" },
+          lastUnitCost: { $last: "$unitCost" },
+          batches: {
+            $push: {
+              batch_number: "$batch_number",
+              availableQty: "$availableQty",
+              unitCost: "$unitCost",
+              sellingPrice: "$sellingPrice",
+              purchaseDate: "$purchaseDate",
+              purchase: "$purchase",
+              purchase_id: "$purchase_id"
+            },
+          },
+        },
+      },
+    ]);
+
+    const nonSerMap = new Map(
+      nonSerializedStocks.map((ns) => [
+        `${String(ns._id.item_id)}__${ns._id.variant_id ? String(ns._id.variant_id) : "null"}`,
+        ns,
+      ])
+    );
+
+    /* -------------------------------------------------
+       5) BUILD FINAL RESULT (EXPERT LOGIC)
+    -------------------------------------------------- */
+    const result = [];
+
+    const deriveBatchesFromSerials = (units = []) => {
+      const batchMap = {};
+      units.forEach(u => {
+        const bNum = u.batch_number || "NO_BATCH";
+        if (!batchMap[bNum]) {
+          batchMap[bNum] = {
+            batch_number: bNum,
+            availableQty: 0,
+            unitCost: u.unitCost,
+            sellingPrice: u.sellingPrice,
+            purchaseDate: u.purchaseDate,
+            purchase: u.purchase
+          };
+        }
+        batchMap[bNum].availableQty++;
+      });
+      return Object.values(batchMap);
+    };
+
+    for (const item of items) {
+      const itemKey = String(item._id);
+      const itemVariants = variantsByItem[itemKey] || [];
+
+      // Logic: If variants exist in ItemVariant, we show ONLY those variants.
+      // We do not show the base item unless variants are explicitly null/empty in DB.
+      if (itemVariants.length > 0) {
+        for (const v of itemVariants) {
+          const k = `${itemKey}__${v._id}`;
+          const ser = serMap.get(k);
+          const ns = nonSerMap.get(k);
+
+          const serUnits = ser?.stockUnits || [];
+          const nsBatches = ns?.batches || [];
+          const serBatches = deriveBatchesFromSerials(serUnits);
+
+          result.push({
+            ...item,
+            uId: `${itemKey}_${v._id}`,
+            isVariant: true,
+            isBase: false,
+            variant_id: v._id,
+            itemName: v.variantName, // Use variant-specific name
+            itemImage: v.variantImage || item.itemImage,
+            variantAttributes: v.variantAttributes,
+            sku: v.sku,
+            barcode: v.barcode || item.barcode,
+
+            totalStock: (ser?.totalAvailable || 0) + (ns?.totalStock || 0),
+            lastSellingPrice: ser?.lastSellingPrice ?? ns?.lastSellingPrice ?? v.defaultSellingPrice ?? 0,
+            lastUnitCost: ser?.lastUnitCost ?? ns?.lastUnitCost ?? v.lastUnitCost ?? 0,
+
+            serializedItems: serUnits,
+            batches: [...nsBatches, ...serBatches],
+          });
+        }
+      } else {
+        // Only return Base Item if it has no associated variants in the ItemVariant schema
+        const k = `${itemKey}__null`;
+        const ser = serMap.get(k);
+        const ns = nonSerMap.get(k);
+
+        const serUnits = ser?.stockUnits || [];
+        const nsBatches = ns?.batches || [];
+        const serBatches = deriveBatchesFromSerials(serUnits);
+
+        result.push({
+          ...item,
+          uId: `${itemKey}_base`,
+          isVariant: false,
+          isBase: true,
+          variant_id: null,
+          itemName: item.itemName,
+
+          totalStock: (ser?.totalAvailable || 0) + (ns?.totalStock || 0),
+          lastSellingPrice: ser?.lastSellingPrice ?? ns?.lastSellingPrice ?? item.pricing?.sellingPrice ?? 0,
+          lastUnitCost: ser?.lastUnitCost ?? ns?.lastUnitCost ?? item.costPrice ?? 0,
+
+          serializedItems: serUnits,
+          batches: [...nsBatches, ...serBatches]
+        });
+      }
+    }
+
+    res.json(result);
+  } catch (err) {
+    console.error("Error in getUnifiedStock:", err);
+    res.status(500).json({ message: "Error fetching unified stock data", error: err.message });
+  }
+};
 // Controller: getItemStockDetails
 exports.getItemStockOverview = async (req, res) => {
   try {
@@ -2274,10 +3124,229 @@ exports.backfillLedger = async (req, res) => {
         }
       }
     }
-
     res.json({ message: "Backfill completed", totalCreated });
   } catch (error) {
     console.error("Backfill Error:", error);
     res.status(500).json({ message: error.message });
+  }
+};
+
+// Stock Statistics for Dashboard
+exports.getStockStatistics = async (req, res) => {
+  try {
+    // 1. Identify all trackable SKUs (Legacy Base Items with NO variants + All Variant records)
+    const [allVariants, allItems] = await Promise.all([
+      ItemVariant.find({}, 'item_id').lean(),
+      Items.find({}, '_id').lean()
+    ]);
+
+    const itemsWithVariants = new Set(allVariants.map(v => v.item_id.toString()));
+    const legacyItems = allItems.filter(i => !itemsWithVariants.has(i._id.toString()));
+
+    // Total Trackable SKUs = All Variants + Base Items that have no variants
+    const totalSKUs = allVariants.length + legacyItems.length;
+
+    // 2. Identify Purchased SKUs (Those appearing in Stock records)
+    const [serItems, nonSerItems] = await Promise.all([
+      SerializedStock.aggregate([
+        { $group: { _id: { item_id: "$item_id", variant_id: "$variant_id" } } }
+      ]),
+      NonSerializedStock.aggregate([
+        { $group: { _id: { item_id: "$item_id", variant_id: "$variant_id" } } }
+      ])
+    ]);
+
+    const purchasedSKUs = new Set();
+    const addSKU = (doc) => {
+      const { item_id, variant_id } = doc._id;
+      // If variant_id exists, the SKU is the variant. Else it's the base item.
+      purchasedSKUs.add(variant_id ? variant_id.toString() : item_id.toString());
+    };
+    serItems.forEach(addSKU);
+    nonSerItems.forEach(addSKU);
+
+    const purchasedCount = purchasedSKUs.size;
+
+    // 3. Detailed calculation for InStock / LowStock / OutStock
+    // We aggregate stock by (item_id, variant_id) pair to match the "Unified" view logic
+    const [serializedAgg, nonSerializedAgg] = await Promise.all([
+      SerializedStock.aggregate([
+        { $match: { status: "Available" } },
+        {
+          $group: {
+            _id: { item_id: "$item_id", variant_id: "$variant_id" },
+            qty: { $sum: 1 }
+          }
+        }
+      ]),
+      NonSerializedStock.aggregate([
+        { $match: { status: "Available" } },
+        {
+          $group: {
+            _id: { item_id: "$item_id", variant_id: "$variant_id" },
+            qty: { $sum: "$availableQty" }
+          }
+        }
+      ])
+    ]);
+
+    // Map quantities to SKU string
+    const skuQtyMap = {};
+    const processAgg = (agg) => {
+      agg.forEach(doc => {
+        const key = doc._id.variant_id ? doc._id.variant_id.toString() : doc._id.item_id.toString();
+        skuQtyMap[key] = (skuQtyMap[key] || 0) + doc.qty;
+      });
+    };
+    processAgg(serializedAgg);
+    processAgg(nonSerializedAgg);
+
+    // 4. Categorize SKUs based on Alert Quantity from Base Item
+    // Fetch all items to get alert quantities
+    const itemMap = allItems.reduce((acc, i) => {
+      acc[i._id.toString()] = i;
+      return acc;
+    }, {});
+
+    // For variants, we need the parent item's alert quantity
+    const variantToItemMap = allVariants.reduce((acc, v) => {
+      acc[v._id.toString()] = v.item_id.toString();
+      return acc;
+    }, {});
+
+    let inStock = 0, lowStock = 0, outStock = 0;
+
+    purchasedSKUs.forEach(skuId => {
+      const qty = skuQtyMap[skuId] || 0;
+
+      // Get Parent Item ID
+      const parentItemId = variantToItemMap[skuId] || skuId;
+      const parentItem = itemMap[parentItemId];
+      const alertQty = parentItem ? parseInt(parentItem.alertQuantity || 0) : 0;
+
+      if (qty <= 0) outStock++;
+      else {
+        inStock++; // Available = Any items with stock > 0
+        if (qty <= alertQty) lowStock++; // Low Stock = Subset of items with stock
+      }
+    });
+
+    res.json({
+      totalItems: totalSKUs,
+      purchased: purchasedCount,
+      neverPurchased: totalSKUs - purchasedCount,
+      inStock,
+      lowStock,
+      outStock
+    });
+  } catch (error) {
+    console.error('Stock Statistics Error:', error);
+    res.status(500).json({ message: 'Error calculating stock statistics', error: error.message });
+  }
+};
+
+exports.backfillItemsWithNoPurchaseHistory = async (req, res) => {
+  // logic to fix any data inconsistencies if needed
+};
+/**
+ * getBarcodeDataByPurchase:
+ * Fetches authoritative data (barcodes, actual batch numbers, serials)
+ * for items in a specific purchase, prepared for PrintableLabels.
+ */
+exports.getBarcodeDataByPurchase = async (req, res) => {
+  try {
+    const { purchaseId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(purchaseId)) {
+      return res.status(400).json({ message: "Invalid purchaseId" });
+    }
+
+    // 1. Fetch both stock types for this purchase
+    const [nonSer, ser] = await Promise.all([
+      NonSerializedStock.find({ purchase_id: purchaseId })
+        .populate("item_id", "itemName barcode category itemImage")
+        .populate("variant_id", "variantName barcode variantAttributes")
+        .lean(),
+      SerializedStock.find({ purchase_id: purchaseId })
+        .populate("item_id", "itemName barcode category itemImage")
+        .populate("variant_id", "variantName barcode variantAttributes")
+        .lean()
+    ]);
+
+    // 2. Normalize Non-Serialized Stock
+    const nonSerGrouped = nonSer.map(stock => ({
+      _id: `${stock.item_id?._id}_${stock.variant_id?._id || 'base'}`,
+      item_id: stock.item_id?._id,
+      variant_id: stock.variant_id?._id,
+      itemName: stock.variant_id?.variantName || stock.item_id?.itemName,
+      barcode: stock.variant_id?.barcode || stock.item_id?.barcode,
+      category: stock.item_id?.category,
+      itemImage: stock.item_id?.itemImage,
+      totalStock: stock.purchaseQty,
+      serialized: false,
+      lastSellingPrice: stock.sellingPrice,
+      batches: [{
+        batch_number: stock.batch_number,
+        availableQty: stock.purchaseQty,
+        unitCost: stock.unitCost,
+        sellingPrice: stock.sellingPrice,
+        purchaseDate: stock.purchaseDate
+      }]
+    }));
+
+    // 3. Normalize Serialized Stock (Group by Item/Variant)
+    const serGroupedMap = ser.reduce((acc, stock) => {
+      const key = `${stock.item_id?._id}_${stock.variant_id?._id || 'base'}`;
+      if (!acc[key]) {
+        acc[key] = {
+          _id: key,
+          item_id: stock.item_id?._id,
+          variant_id: stock.variant_id?._id,
+          itemName: stock.variant_id?.variantName || stock.item_id?.itemName,
+          barcode: stock.variant_id?.barcode || stock.item_id?.barcode,
+          category: stock.item_id?.category,
+          itemImage: stock.item_id?.itemImage,
+          lastSellingPrice: stock.sellingPrice,
+          totalStock: 0,
+          serialized: true,
+          serializedItems: [],
+          batches: []
+        };
+      }
+
+      acc[key].totalStock += 1;
+      acc[key].serializedItems.push({
+        serialNumber: stock.serialNumber,
+        unitCost: stock.unitCost,
+        category: stock.item_id?.category,
+        sellingPrice: stock.sellingPrice,
+        condition: stock.condition,
+        batteryHealth: stock.batteryHealth,
+        batch_number: stock.batch_number
+      });
+
+      // Maintain batch summary
+      let batch = acc[key].batches.find(b => b.batch_number === stock.batch_number);
+      if (!batch) {
+        batch = {
+          batch_number: stock.batch_number,
+          availableQty: 0,
+          unitCost: stock.unitCost,
+          sellingPrice: stock.sellingPrice,
+          purchaseDate: stock.purchaseDate
+        };
+        acc[key].batches.push(batch);
+      }
+      batch.availableQty += 1;
+
+      return acc;
+    }, {});
+
+    const serGrouped = Object.values(serGroupedMap);
+
+    res.status(200).json([...nonSerGrouped, ...serGrouped]);
+  } catch (err) {
+    console.error("🔥 getBarcodeDataByPurchase ERROR:", err);
+    res.status(500).json({ message: "Error fetching barcode data", error: err.message });
   }
 };

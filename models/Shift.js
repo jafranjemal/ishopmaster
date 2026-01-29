@@ -12,6 +12,24 @@ const shiftSchema = new mongoose.Schema(
             type: Number,
             required: true
         },
+        /**
+         * accountId: The target Cash Drawer / Workstation box.
+         * Example: "Main Register", "Drawer 01"
+         */
+        accountId: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'Account',
+            // required: true // Removed to support bulk closure of legacy active shifts
+        },
+        /**
+         * sourceAccountId: The 'Vault' or 'Safe' account where the opening float comes from.
+         * Used only when starting a session from scratch (not Carry-Forward).
+         * Example: "Main Shop Safe", "Back-Office Bank"
+         */
+        sourceAccountId: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'Account'
+        },
         cashAdded: {
             type: Number,
             default: 0
@@ -34,12 +52,29 @@ const shiftSchema = new mongoose.Schema(
                 reason: {
                     type: String
                 },
+                category: {
+                    type: String,
+                    enum: ['Safe Drop', 'Float Top-up', 'Petty Cash', 'Supplier Payment', 'Refund', 'Misc Income', 'Generic'],
+                    default: 'Generic'
+                },
+                authorizedBy: {
+                    type: mongoose.Schema.Types.ObjectId,
+                    ref: 'users'
+                },
+                transactionId: {
+                    type: mongoose.Schema.Types.ObjectId,
+                    ref: 'Transaction'
+                },
+                snapshotBalance: {
+                    type: Number // System expected balance at time of entry
+                },
                 createdAt: {
                     type: Date,
                     default: Date.now
                 }
             }
         ],
+        openingMismatch: { type: Number, default: 0 }, // Difference found at start
         endCash: {
             type: Number
         },
@@ -70,9 +105,20 @@ const shiftSchema = new mongoose.Schema(
         sales: [],
         status: {
             type: String,
-            enum: ['active', 'closed', 'canceled'],
+            enum: ['active', 'closing', 'closed', 'canceled'],
             default: 'active'
         },
+        // Immutable Snapshots (Hard Cutoff)
+        finalCalculatedCash: { type: Number },
+        finalTotalSales: { type: Number },
+        finalPaymentBreakdown: [
+            {
+                method: { type: String },
+                expected: { type: Number },
+                actual: { type: Number },
+                mismatch: { type: Number }
+            }
+        ],
         paymentBreakdown: [
             {
                 method: { type: String, enum: ["Account", "Cash", "Card", "Cheque", "Bank Transfer"], required: true },
@@ -85,6 +131,10 @@ const shiftSchema = new mongoose.Schema(
             type: Number,
             default: 0
         },
+        totalNonCashSales: {
+            type: Number,
+            default: 0
+        },
     },
     {
         timestamps: true,
@@ -93,6 +143,8 @@ const shiftSchema = new mongoose.Schema(
     });
 
 shiftSchema.virtual('calculatedEndCash').get(function () {
+    // We add openingMismatch because if starting cash was actually 4800 (but ledger said 5000), 
+    // the system expects 200 less than the simple sum.
     return (this.totalCashSales || 0) + this.startCash + this.cashAdded - this.cashRemoved;
 });
 

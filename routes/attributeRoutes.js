@@ -4,9 +4,9 @@ const attributeController = require('../controllers/attributeController');
 
 router.get('/', attributeController.getAttributes);
 router.post('/', attributeController.saveAttribute);
+router.post('/quick-sync', attributeController.quickSync);
 router.delete('/:id', attributeController.deleteAttribute);
 router.put('/reorder', attributeController.reorderAttributes);
-
 // Manual trigger for legacy migration/seeding
 router.get('/bootstrap', async (req, res) => {
     try {

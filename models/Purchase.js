@@ -4,7 +4,15 @@ const purchaseSchema = new mongoose.Schema({
   supplier: { type: mongoose.Schema.Types.ObjectId, ref: "Supplier" }, // Optional if it's a trade-in
   customer: { type: mongoose.Schema.Types.ObjectId, ref: "Customer" }, // For trade-ins
   purchase_type: { type: String, enum: ["Supplier", "Trade-In"], default: "Supplier" },
+
+  // Vendor Representation
+  ref_agent_id: { type: mongoose.Schema.Types.ObjectId }, // Link to Supplier.contacts._id
+  ref_agent_name: { type: String }, // Historical snapshot
+  batch_number: { type: String }, // Historical snapshot
+  credit_segment_name: { type: String, default: "General" },
+
   referenceNumber: { type: String, unique: true, required: true },
+  supplier_bill_no: { type: String },
   purchaseDate: { type: Date, default: Date.now },
   payment_type: { type: String, enum: ["Cash", "Credit", "Other"], },
   bill_proof: { type: String }, // Image URL
@@ -18,6 +26,12 @@ const purchaseSchema = new mongoose.Schema({
     enum: ["Received", "Pending Verification", "Cancelled", "Discrepancy"],
     default: "Pending Verification",
   },
+
+  // New Procurement Fields
+  sourceType: { type: String, enum: ["DIRECT", "PO"], default: "DIRECT" },
+  source_po_id: { type: mongoose.Schema.Types.ObjectId, ref: "PurchaseOrder" }, // Link to PO if applicable
+  isStockUpdated: { type: Boolean, default: false }, // DIRECT = true, PO = false (until GRN)
+
   verification_date: { type: Date },
   verification_notes: { type: String },
   discrepancy_details: {

@@ -140,10 +140,11 @@ class PermissionService {
       'customers', 'dashboard', 'employee', 'items',
       'payments', 'pos', 'purchase', 'repair', 'sales',
       'shift', 'stock', 'suppliers', 'transactions', 'settings',
-      'units', 'users', 'barcode', 'supplier', "customersAccount", "supplierAccount", "employeeAccount", "companyAccount"
+      'units', 'users', 'barcode', 'supplier', "customersAccount", "supplierAccount", "employeeAccount", "companyAccount",
+      "intelligence"
     ];
 
-    const validActions = ['view', 'create', 'edit', 'delete', 'export'];
+    const validActions = ['view', 'create', 'edit', 'delete', 'export', 'view_sensitive'];
 
     const invalidEntries = data.filter(
       item => !validModules.includes(item.module) ||

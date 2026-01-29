@@ -5,7 +5,7 @@ const mongoose = require('mongoose');
 
 exports.createTransaction = async (req, res) => {
   try {
-    const { account_id, amount, transaction_type, reason } = req.body;
+    const { account_id, amount, transaction_type, reason, agent_id, segment_id } = req.body;
 
     if (!account_id || !amount || !transaction_type || !reason) {
       return res.status(400).json({ message: "All fields are required" });
@@ -25,17 +25,19 @@ exports.createTransaction = async (req, res) => {
       return res.status(404).json({ message: "Account not found" });
     }
 
-    // Calculate balance after transaction
-    let balance_after_transaction;
-    if (transaction_type === "Deposit") {
-      balance_after_transaction = account.balance + amount;
-    } else if (transaction_type === "Withdrawal") {
+    // Unified Balance Logic (from paymentController.js)
+    const numericAmount = Number(amount);
+    const absAmount = Math.abs(numericAmount);
 
-      if (account.account_owner_type !== "Supplier" && account.balance < amount) {  // Deposit and Withdrawal can be any amount for Suppliers
-        return res.status(400).json({ message: "Insufficient balance for withdrawal" });
-      }
-      balance_after_transaction = account.balance - amount;
-    }
+    // Deposits to a Payable/Supplier account must DECREASE the debt (debit)
+    // Withdrawals from a Payable/Supplier account must INCREASE the debt (credit)
+    const isLiability = account.account_type === 'Payable' || account.account_owner_type === 'Supplier';
+
+    const adjustment = (transaction_type === "Deposit")
+      ? (isLiability ? -absAmount : absAmount)
+      : (isLiability ? absAmount : -absAmount);
+
+    const balance_after_transaction = (account.balance || 0) + adjustment;
 
     // Update the account balance
     account.balance = balance_after_transaction;
@@ -44,10 +46,12 @@ exports.createTransaction = async (req, res) => {
     // Create the transaction
     const newTransaction = new Transaction({
       account_id,
-      amount: transaction_type === "Withdrawal" ? amount * -1 : amount,
+      amount: absAmount, // Consistent with paymentController: store absolute value
       transaction_type,
       reason,
       balance_after_transaction,
+      agent_id: agent_id || undefined,
+      segment_id: segment_id || undefined,
     });
     await newTransaction.save();
 

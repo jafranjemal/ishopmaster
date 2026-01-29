@@ -16,6 +16,7 @@ const ItemSchema = new mongoose.Schema(
     }, // Item Type
     itemDescription: { type: String }, // Optional description
     manufacturer: { type: String }, // Manufacturer name
+    manufacturerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Brand', default: null }, // Link to Brand
     phoneModelId: { type: mongoose.Schema.Types.ObjectId, ref: "PhoneModel", default: null }, // Link to PhoneModel
     modelName: { type: String }, // Model name (Text fallback/cache)
     barcode: { type: String, unique: true }, // Unique barcode (if applicable)
@@ -28,18 +29,19 @@ const ItemSchema = new mongoose.Schema(
 
     // Fields Specific to Devices
 
-    deviceCategory: { type: String }, // RAM size
-    deviceSubCategory: { type: String }, // RAM size
-    ramSize: { type: String }, // RAM size
-    storageSize: { type: String }, // Storage size
-    displaySize: { type: String }, // Display size
-    rearCamera: { type: String }, // Rear camera pixels
-    frontCamera: { type: String }, // Front camera pixels
-    fingerprint: { type: Boolean }, // Fingerprint availability
-    networkType: { type: String }, // Supported networks (e.g., 4G, 5G)
-    simType: { type: String }, // SIM type (e.g., Nano)
-    batteryCapacity: { type: Number }, // Number of SIM slots
-    batteryHealth: { type: Number }, // Number of SIM slots
+    deviceCategory: { type: String },
+    deviceSubCategory: { type: String },
+    //depricated fields 
+    //ramSize: { type: String }, 
+    //storageSize: { type: String }, 
+    //displaySize: { type: String }, 
+    //rearCamera: { type: String }, 
+    //frontCamera: { type: String }, 
+    //fingerprint: { type: Boolean }, 
+    //networkType: { type: String }, 
+    //simType: { type: String }, // SIM type (e.g., Nano)
+    //batteryCapacity: { type: Number }, // Number of SIM slots
+    //batteryHealth: { type: Number }, // Number of SIM slots
 
 
 
@@ -101,7 +103,8 @@ const ItemSchema = new mongoose.Schema(
       currentStock: { type: Number, default: 0 },
       reservedForRepairs: { type: Number, default: 0 },
       availableForSale: { type: Number, default: 0 },
-      reorderPoint: { type: Number, default: 5 }
+      reorderPoint: { type: Number, default: 5 },
+      preferredSupplier: { type: mongoose.Schema.Types.ObjectId, ref: 'Supplier', default: null }
     },
 
     pricing: {
@@ -113,7 +116,7 @@ const ItemSchema = new mongoose.Schema(
         purchaseId: { type: mongoose.Schema.Types.ObjectId, ref: 'Purchase' }
       }]
     },
-    // END TOON ENHANCEMENTS
+
 
     createdAt: { type: Date, default: Date.now }, // Creation timestamp
     updatedAt: { type: Date, default: Date.now }, // Update timestamp

@@ -9,164 +9,59 @@ const { ApiError } = require("../utility/ApiError");
 const Ticket = require("../models/Ticket");
 const warrantyController = require("./warrantyController");
 const StockLedger = require("../models/StockLedger");
-
-async function updateInventory_old(items) {
-  console.log("updateInventory start...");
-  const serializedItems = items.filter((item) => item.isSerialized);
-  const nonSerializedItems = items.filter((item) => !item.isSerialized);
-
-  // Update serialized items in bulk
-
-  const serializedUpdates = [];
-
-  for (const item of serializedItems) {
-    // Validate serial numbers
-    if (!Array.isArray(item.serialNumbers)) {
-      throw new ApiError(400, "Invalid serial numbers format");
-    }
-
-    // Create individual updates for each serial number
-    item.serialNumbers.forEach((serialNumber) => {
-      serializedUpdates.push({
-        updateOne: {
-          filter: { serialNumber: serialNumber },
-          update: {
-            $set: {
-              status: "Sold",
-              sold_date: new Date(),
-            },
-          },
-        },
-      });
-    });
-  }
-
-  // Update non-serialized items in bulk
-  const nonSerializedUpdates = nonSerializedItems.map((item) => ({
-    updateOne: {
-      filter: { item_id: item.item_id },
-      update: {
-        $inc: {
-          soldQty: item.quantity,
-          availableQty: -item.quantity,
-        },
-      },
-    },
-  }));
-
-  await Promise.all([
-    await SerializedStock.bulkWrite(serializedUpdates),
-    await NonSerializedStock.bulkWrite(nonSerializedUpdates),
-  ]);
-
-  console.log("updateInventory end...");
-}
+const Item = require("../models/Items");
+const { logToLedger, syncUpward } = require("../services/inventoryService");
 
 async function updateInventory(items) {
+  console.log("updateInventory start...");
   try {
-    console.log("updateInventory start...");
+    const { logToLedger, syncUpward } = require("../services/inventoryService");
 
-    // Separate serialized and non-serialized items
-    const serializedItems = items.filter((item) => item.isSerialized);
-    const nonSerializedItems = items.filter((item) => !item.isSerialized);
+    for (const item of items) {
+      const { item_id, variant_id, quantity, serialNumbers, isSerialized, batch_number, itemName, price } = item;
 
-    const serializedUpdates = [];
-
-    for (const item of serializedItems) {
-      if (!Array.isArray(item.serialNumbers)) {
-        throw new Error("Invalid serial numbers format");
-      }
-
-      item.serialNumbers.forEach((serialNumber) => {
-        serializedUpdates.push({
-          updateOne: {
-            filter: { serialNumber },
-            update: {
-              $set: {
-                status: "Sold",
-                sold_date: new Date(),
-              },
-            },
-          },
+      if (isSerialized && serialNumbers && serialNumbers.length > 0) {
+        await SerializedStock.updateMany(
+          { serialNumber: { $in: serialNumbers } },
+          { $set: { status: "Sold", sold_date: new Date() } }
+        );
+        for (const sn of serialNumbers) {
+          await logToLedger({
+            item_id,
+            variant_id,
+            qty: -1,
+            movementType: "Sale-Out",
+            batch_number,
+            sellingPrice: price,
+            serialNumber: sn,
+            memo: `Sale: ${itemName} (SN: ${sn})`
+          });
+        }
+      } else {
+        const stockRecord = await NonSerializedStock.findOne({
+          item_id,
+          variant_id: variant_id || null,
+          batch_number
         });
-      });
-    }
 
-    // --- LOG LEDGER MOVEMENTS ---
-    for (const item of serializedItems) {
-      // Get current count of available items of this type
-      const currentStockCount = await SerializedStock.countDocuments({
-        item_id: item.item_id,
-        status: "Available"
-      });
+        if (stockRecord) {
+          stockRecord.availableQty = Math.max(0, stockRecord.availableQty - quantity);
+          stockRecord.soldQty = (stockRecord.soldQty || 0) + quantity;
+          await stockRecord.save();
 
-      for (let i = 0; i < (item.serialNumbers || []).length; i++) {
-        const sn = item.serialNumbers[i];
-        const opening = currentStockCount - i;
-        const closing = opening - 1;
-
-        await StockLedger.create({
-          item_id: item.item_id,
-          variant_id: item.variant_id || null,
-          movementType: "Sale-Out",
-          qty: -1,
-          opening_balance: opening,
-          closing_balance: closing,
-          serialNumber: sn,
-          memo: `Sale: ${item.itemName}`,
-          createdAt: new Date()
-        });
+          await logToLedger({
+            item_id,
+            variant_id,
+            qty: -quantity,
+            movementType: "Sale-Out",
+            batch_number,
+            sellingPrice: price,
+            memo: `Sale: ${itemName}`
+          });
+        }
       }
+      await syncUpward(item_id, variant_id);
     }
-
-    for (const item of nonSerializedItems) {
-      // Get current available quantity for this specific batch
-      const stockRecord = await NonSerializedStock.findOne({
-        item_id: item.item_id,
-        batch_number: item.batch_number
-      });
-
-      const opening = stockRecord ? stockRecord.availableQty : 0;
-      const closing = opening - item.quantity;
-
-      await StockLedger.create({
-        item_id: item.item_id,
-        variant_id: item.variant_id || null,
-        movementType: "Sale-Out",
-        qty: -item.quantity,
-        opening_balance: opening,
-        closing_balance: closing,
-        batch_number: item.batch_number,
-        memo: `Sale: ${item.itemName} (Batch: ${item.batch_number})`,
-        createdAt: new Date()
-      });
-    }
-
-    console.log("nonSerializedItems ", nonSerializedItems);
-    const nonSerializedUpdates = nonSerializedItems.map((item) => ({
-      updateOne: {
-        filter: { item_id: item.item_id, batch_number: item.batch_number },
-        update: {
-          $inc: {
-            soldQty: item.quantity,
-            availableQty: -item.quantity,
-          },
-        },
-      },
-    }));
-
-    const updatePromises = [];
-    if (serializedUpdates.length > 0) {
-      updatePromises.push(SerializedStock.bulkWrite(serializedUpdates));
-    }
-    if (nonSerializedUpdates.length > 0) {
-      updatePromises.push(NonSerializedStock.bulkWrite(nonSerializedUpdates));
-    }
-
-    if (updatePromises.length > 0) {
-      await Promise.all(updatePromises);
-    }
-
     console.log("updateInventory end...");
   } catch (error) {
     console.error("Error in updateInventory:", error);
@@ -174,255 +69,192 @@ async function updateInventory(items) {
   }
 }
 
-async function updateInventory_o(items) {
+// Helper: Logging sales in shift
+async function logSaleInShift(shiftId, invoiceId, total_amount, payment_methods = []) {
   try {
-    console.log("updateInventory start...");
+    const shift = await Shift.findById(shiftId);
+    if (!shift) throw new Error("Shift not found");
 
-    // Separate serialized and non-serialized items
-    const { serializedItems, nonSerializedItems } = separateItems(items);
+    const cashPaid = payment_methods
+      .filter(pm => pm.method === "Cash")
+      .reduce((acc, pm) => acc + pm.amount, 0);
 
-    // Validate and prepare serialized items for bulk update
-    const serializedUpdates = prepareSerializedUpdates(serializedItems);
+    const nonCashPaid = total_amount - cashPaid;
 
-    // Prepare non-serialized items for bulk update
-    const nonSerializedUpdates =
-      prepareNonSerializedUpdates(nonSerializedItems);
+    shift.sales.push(invoiceId);
+    shift.totalSales += total_amount;
+    shift.totalCashSales = (shift.totalCashSales || 0) + cashPaid;
+    shift.totalNonCashSales = (shift.totalNonCashSales || 0) + nonCashPaid;
+    shift.totalTransactions += 1;
 
-    // Perform bulk updates
-    await performBulkUpdates(serializedUpdates, nonSerializedUpdates);
-
-    console.log("updateInventory end...");
+    await shift.save();
   } catch (error) {
-    console.error(error);
+    console.error("Error logging sale in shift:", error);
     throw error;
   }
 }
 
-// Helper function to separate serialized and non-serialized items
-function separateItems(items) {
-  return {
-    serializedItems: items.filter((item) => item.isSerialized),
-    nonSerializedItems: items.filter((item) => !item.isSerialized),
-  };
-}
+async function updateInventoryReversal(items) {
+  try {
+    console.log("updateInventoryReversal() started ....\n");
+    for (const item of items) {
+      const { item_id, variant_id, quantity, serialNumbers, isSerialized, batch_number, itemName, price } = item;
 
-// Helper function to prepare serialized items for bulk update
-function prepareSerializedUpdates(serializedItems) {
-  return serializedItems.flatMap((item) => {
-    if (!Array.isArray(item.serialNumbers)) {
-      throw new ApiError(400, "Invalid serial numbers format");
+      if (isSerialized && serialNumbers) {
+        await SerializedStock.updateMany(
+          { serialNumber: { $in: serialNumbers } },
+          { $set: { status: "Available", sold_date: null } }
+        );
+        for (const sn of serialNumbers) {
+          await logToLedger({
+            item_id,
+            variant_id,
+            qty: 1,
+            movementType: "Reversal-In",
+            batch_number,
+            serialNumber: sn,
+            memo: `Sale Reversal: ${itemName}`
+          });
+        }
+      } else {
+        await NonSerializedStock.updateOne(
+          { item_id, variant_id: variant_id || null, batch_number },
+          { $inc: { soldQty: -quantity, availableQty: quantity } }
+        );
+        await logToLedger({
+          item_id,
+          variant_id,
+          qty: quantity,
+          movementType: "Reversal-In",
+          batch_number,
+          memo: `Sale Reversal: ${itemName}`
+        });
+      }
+      await syncUpward(item_id, variant_id);
     }
-    return item.serialNumbers.map((serialNumber) => ({
-      updateOne: {
-        filter: { serialNumber },
-        update: {
-          $set: {
-            status: "Sold",
-            sold_date: new Date(),
-          },
-        },
-      },
-    }));
-  });
-}
-
-// Helper function to prepare non-serialized items for bulk update
-function prepareNonSerializedUpdates(nonSerializedItems) {
-  return nonSerializedItems.map((item) => ({
-    updateOne: {
-      filter: { item_id: item.item_id },
-      update: {
-        $inc: {
-          soldQty: item.quantity,
-          availableQty: -item.quantity,
-        },
-      },
-    },
-  }));
-}
-
-// Helper function to perform bulk updates
-async function performBulkUpdates(serializedUpdates, nonSerializedUpdates) {
-  await Promise.all([
-    SerializedStock.bulkWrite(serializedUpdates),
-    NonSerializedStock.bulkWrite(nonSerializedUpdates),
-  ]);
+  } catch (error) {
+    console.error("Error during inventory reversal:", error);
+    throw error;
+  }
 }
 
 async function processPayment(invoiceId, paymentDetails) {
   console.log("processPayment start...", paymentDetails);
 
-  const invoice = await SalesInvoice.findOne({
-    invoice_id: invoiceId,
-  });
-
+  const invoice = await SalesInvoice.findOne({ invoice_id: invoiceId });
   if (!invoice) throw new Error("Invoice not found");
-
-  let totalPaid = 0;
-  let totalAmount = 0;
-  let balance = 0;
-  let isPaid = false;
-
-  // Get the company account
-  const companyAccount = await Account.findOne({
-    account_owner_type: "Company",
-  });
-
-  if (!companyAccount) throw new Error("Company account not found");
 
   const customerAccount = await Account.findOne({
     account_owner_type: "Customer",
     related_party_id: invoice.customer,
   });
 
-  if (!customerAccount) throw new Error("Company account not found");
+  if (!customerAccount) throw new Error("Customer account not found");
+
+  let totalPaid = 0;
+  let totalAmount = 0;
+
+  // Payment Mapping Service
+  const { resolveAccountForMethod } = require("../services/paymentMappingService");
 
   for (const payment of paymentDetails) {
-    const { method, amount } = payment;
-    console.log("paid amount : ", amount);
+    const { method, amount, target_account_id } = payment;
     if (amount && amount > 0) {
-      //amount =10000 / 1000*10
-      //totalSales = 2500
-      //overpaid = 7500
       totalAmount += amount;
-      console.log("totalAmount : ", totalAmount);
 
-      if (invoice.total_amount <= totalAmount && !isPaid) {
-        //add extra amount to deposit to customer account
-
-        // add a payment to company
-        balance = totalAmount - invoice.total_amount;
-        const needpaid = totalAmount - balance;
-
-        const transaction = new Transaction({
-          account_id: companyAccount._id,
-          amount: needpaid,
-          transaction_type: "Deposit",
-          reason: `Payment for Invoice ${invoice.invoice_id} via ${method}`,
-          balance_after_transaction: companyAccount.balance + needpaid,
-        });
-        await transaction.save();
-
-        // Update company account balance
-        companyAccount.balance += needpaid;
-        await companyAccount.save();
-
-        // Create a payment record
-        const paymentRecord = new Payment({
-          from_account_id: invoice.customer, // Assuming the customer account is the source
-          to_account_id: companyAccount._id, // Company account is the destination
-          amount: needpaid,
-          payment_methods: [{ method: method, amount: needpaid }],
-          transaction_type: "Sale", // Adjust as necessary
-          references: {
-            customer: invoice.customer,
-            sale: invoice._id,
-          },
-          description: `Payment for Invoice ${invoice.invoice_id}`,
-        });
-
-        await paymentRecord.save();
-
-        if (balance !== 0) {
-          //add extra balance to customer acount
-          const transaction = new Transaction({
-            account_id: customerAccount._id,
-            amount: balance,
-            transaction_type: "Deposit",
-            reason: `Extra Payment from Invoice ${invoice.invoice_id} via ${method}`,
-            balance_after_transaction: customerAccount.balance + balance,
-          });
-
-          await transaction.save();
-
-          // Update customer account balance
-          customerAccount.balance += balance;
-          await customerAccount.save();
-        }
-
-        totalPaid += needpaid;
-        isPaid = balance !== 0;
-      } else if (isPaid && balance !== 0) {
-        //extra rest amount to pay
-        //add extra balance to customer acount
-        const transaction = new Transaction({
-          account_id: customerAccount._id,
-          amount: balance,
-          transaction_type: "Deposit",
-          reason: `Extra Payment from Invoice ${invoice.invoice_id} via ${method}`,
-          balance_after_transaction: customerAccount.balance + balance,
-        });
-
-        await transaction.save();
-
-        // Update customer account balance
-        customerAccount.balance += balance;
-        await customerAccount.save();
-      } else if (invoice.total_amount >= totalAmount && !isPaid) {
-        const transaction = new Transaction({
-          account_id: companyAccount._id,
-          amount: amount,
-          transaction_type: "Deposit",
-          reason: `Partial Payment for Invoice ${invoice.invoice_id} via ${method}`,
-          balance_after_transaction: companyAccount.balance + amount,
-        });
-        await transaction.save();
-
-        // Update company account balance
-        companyAccount.balance += amount;
-        await companyAccount.save();
-
-        // Create a payment record
-        const paymentRecord = new Payment({
-          from_account_id: invoice.customer, // Assuming the customer account is the source
-          to_account_id: companyAccount._id, // Company account is the destination
-          amount: amount,
-          payment_methods: [{ method: method, amount: amount }],
-          transaction_type: "Sale", // Adjust as necessary
-          references: {
-            customer: invoice.customer,
-            sale: invoice._id,
-          },
-          description: `Partial Payment for Invoice ${invoice.invoice_id}`,
-        });
-
-        await paymentRecord.save();
-
-        totalPaid += amount;
+      // 1. Resolve Target Account Dynamically
+      let targetAccountId = payment.target_account_id;
+      if (!targetAccountId) {
+        targetAccountId = await resolveAccountForMethod(method);
       }
+      const targetAccount = await Account.findById(targetAccountId);
+
+      if (!targetAccount) throw new Error(`Target account for method ${method} not found.`);
+
+      // 2. Deposit logic for Target Account (Company Cash/Bank)
+      // Asset: Deposit = Increase (+)
+      const targetTransaction = new Transaction({
+        account_id: targetAccount._id,
+        amount: amount,
+        transaction_type: "Deposit",
+        reason: `Payment for Invoice ${invoice.invoice_id} via ${method}`,
+        balance_after_transaction: targetAccount.balance + amount,
+      });
+      await targetTransaction.save();
+
+      targetAccount.balance += amount;
+      await targetAccount.save();
+
+      // 3. Create Payment Record
+      // from: Customer, to: Target Company Account
+      const paymentRecord = new Payment({
+        from_account_id: customerAccount._id, // Source: Customer
+        to_account_id: targetAccount._id,     // Destination: Mapped Company Account
+        amount: amount,
+        payment_methods: [{ method: method, amount: amount }], // Track specific chunk
+        transaction_type: "Sale",
+        references: {
+          customer: invoice.customer,
+          sale: invoice._id,
+        },
+        description: `Payment for Invoice ${invoice.invoice_id} via ${method}`,
+      });
+      await paymentRecord.save();
+
+      // 4. Update Invoice Paid Amount
+      totalPaid += amount;
     }
   }
 
+  // Handle Overpayment / Credit Balance logic if needed
+  // Note: Previous logic handled split payments and overpayments complexly. 
+  // Simplified here to Focus on CORRECT ROUTING.
+  // Ideally, if (totalPaid > invoice.total_amount), the excess should be credited to Customer Account balance.
+
+  if (totalPaid > invoice.total_amount) {
+    const overpaid = totalPaid - invoice.total_amount;
+    // Credit the customer account (Deposit)
+    const creditTransaction = new Transaction({
+      account_id: customerAccount._id,
+      amount: overpaid,
+      transaction_type: "Deposit",
+      reason: `Overpayment Credit from Invoice ${invoice.invoice_id}`,
+      balance_after_transaction: customerAccount.balance + overpaid
+    });
+    await creditTransaction.save();
+    customerAccount.balance += overpaid;
+    await customerAccount.save();
+  }
+
   const invoiceStatus =
-    invoice.total_paid_amount === 0
+    totalPaid === 0
       ? "Unpaid"
-      : invoice.total_amount === invoice.total_paid_amount
+      : totalPaid >= invoice.total_amount
         ? "Paid"
         : "Partially paid";
-  // Update the invoice due amount
-  //invoice.total_paid_amount = totalPaid;
+
   invoice.status = invoiceStatus;
-  console.log("invoice.status ", invoice.status);
+  invoice.total_paid_amount = Math.min(totalPaid, invoice.total_amount); // Cap at total? Or allow tracking overpayment? Typically cap paid field, credit rest.
+
   if (invoiceStatus === "Partially paid" || invoiceStatus === "Unpaid") {
     // update balance as a Due for customer account
-    const dueAmount = invoice.total_amount - invoice.total_paid_amount;
+    const dueAmount = invoice.total_amount - totalPaid;
+    // Debiting customer account for Due is handled in handleCreditSale or similar
     await handleCreditSale(invoice.customer, dueAmount, invoice.invoice_id);
   }
 
-  await Promise.all([await invoice.save()]);
-
+  await invoice.save();
   console.log("processPayment end...");
 }
 
 async function handleCreditSale(customerId, totalAmount, invoice_id) {
   // Update customer account with due amount
-  console.log("handleCreditSale start...");
   console.log("handleCreditSale start...", totalAmount);
+  // Default recovery method is Cash unless specified otherwise
   const method = "Cash";
+  const { resolveAccountForMethod } = require("../services/paymentMappingService");
 
-  const invoice = await SalesInvoice.findOne({
-    invoice_id: invoice_id,
-  });
+  const invoice = await SalesInvoice.findOne({ invoice_id: invoice_id });
   if (!invoice) throw new Error("Invoice not found");
 
   const customerAccount = await Account.findOne({
@@ -431,79 +263,71 @@ async function handleCreditSale(customerId, totalAmount, invoice_id) {
   });
   if (!customerAccount) throw new Error("Customer account not found");
 
+  // Resolve target company account for "Cash" (or recovery method)
+  const companyAccountId = await resolveAccountForMethod(method);
+  const companyAccount = await Account.findById(companyAccountId);
+  if (!companyAccount) throw new Error("Target Company Account for credit recovery not found");
+
   if (customerAccount.balance >= totalAmount) {
-    //customer has balance in his/her account
-    //deduct from customer account
+    // 1. Customer has sufficient balance (Prepaid/Deposit usage)
+    // DEDUCT from Customer Account (Withdrawal) -> DEPOSIT to Company Account
 
-    // Get the company account
-    const companyAccount = await Account.findOne({
-      account_owner_type: "Company",
-    });
-
-    if (!companyAccount) throw new Error("Company account not found");
-
-    //deposit to company
-
+    // A. Deposit to Company
     const transaction = new Transaction({
       account_id: companyAccount._id,
       amount: totalAmount,
       transaction_type: "Deposit",
-      reason: `Payment Recover from Customer Account for Invoice ${invoice.invoice_id} via ${method}`,
+      reason: `Payment Recover from Customer Account for Invoice ${invoice.invoice_id}`,
       balance_after_transaction: companyAccount.balance + totalAmount,
     });
     await transaction.save();
 
-    // Update company account balance
     companyAccount.balance += totalAmount;
     await companyAccount.save();
 
-    // Create a payment record
+    // B. Create Payment Record
     const paymentRecord = new Payment({
-      from_account_id: invoice.customer, // Assuming the customer account is the source
-      to_account_id: companyAccount._id, // Company account is the destination
+      from_account_id: invoice.customer,
+      to_account_id: companyAccount._id,
       amount: totalAmount,
-      payment_methods: [{ method: "Cash", amount: totalAmount }],
-      transaction_type: "Sale", // Adjust as necessary
+      payment_methods: [{ method: "Account", amount: totalAmount, details: { account_number: customerAccount._id } }],
+      transaction_type: "Sale",
       references: {
         customer: invoice.customer,
         sale: invoice._id,
       },
       description: `Payment Recover from Customer Account for Invoice ${invoice.invoice_id}`,
     });
+    await paymentRecord.save();
 
-    //update invoice status to paid
+    // C. Update Invoice to Paid
     invoice.status = "Paid";
     invoice.total_paid_amount = invoice.total_amount;
+    invoice.payment_methods.push({
+      method: "Account",
+      amount: invoice.total_amount,
+      details: { account_number: customerAccount._id }
+    });
+    await invoice.save();
 
-    invoice.payment_methods = [
-      {
-        method: "Account",
-        amount: invoice.total_amount, // Amount paid via this method
-        details: {
-          account_number: customerAccount._id,
-        },
-      },
-    ];
-
-    console.log("new invoice.status ", invoice.payment_methods);
-    await Promise.all([await paymentRecord.save(), await invoice.save()]);
-
-    //withdrawal from customer
+    // D. DEDUCT from Customer (Withdrawal)
     const customer_transaction = new Transaction({
       account_id: customerAccount._id,
       amount: totalAmount,
       transaction_type: "Withdrawal",
-      reason: `Auto Payment Deduct for Credit Sale Invoice  ${invoice_id} from Account`,
+      reason: `Auto Payment Deduct for Credit Sale Invoice ${invoice_id}`,
       balance_after_transaction: customerAccount.balance - totalAmount,
     });
-
     await customer_transaction.save();
 
-    // Update customer account balance
     customerAccount.balance -= totalAmount;
     await customerAccount.save();
+
   } else {
-    // Create a transaction for the due amount
+    // 2. Insufficient Balance (Credit Sale)
+    // Simply record the DEBT on the customer account.
+    // No money moves to Company yet.
+
     const transaction = new Transaction({
       account_id: customerAccount._id,
       amount: totalAmount,
@@ -514,173 +338,14 @@ async function handleCreditSale(customerId, totalAmount, invoice_id) {
 
     await transaction.save();
 
-    // Update customer account balance
     customerAccount.balance -= totalAmount;
     await customerAccount.save();
   }
-  console.log({ customerAccount });
+
   console.log("handleCreditSale end...");
 }
 
-async function paymentProcessFromAccount(customerId, totalAmount, invoice_id) {
-  console.log("paymentProcessFromAccount start...");
-
-  const invoice = await SalesInvoice.findOne({
-    invoice_id: invoice_id,
-  });
-
-  if (!invoice) throw new Error("Invoice not found");
-
-  const companyAccount = await Account.findOne({
-    account_owner_type: "Company",
-  });
-
-  if (!companyAccount) throw new Error("companyAccount account not found");
-
-  const customerAccount = await Account.findOne({
-    related_party_id: customerId,
-    account_owner_type: "Customer",
-  });
-
-  if (!customerAccount) throw new Error("Customer account not found");
-
-  if (customerAccount.balance >= totalAmount) {
-    //customer has balance in his/her account
-    //deduct from customer account
-
-    // Get the company account
-    const companyAccount = await Account.findOne({
-      account_owner_type: "Company",
-    });
-
-    if (!companyAccount) throw new Error("Company account not found");
-
-    //deposit to company
-
-    const transaction = new Transaction({
-      account_id: companyAccount._id,
-      amount: totalAmount,
-      transaction_type: "Deposit",
-      reason: `Payment Recover from Customer Account for Invoice ${invoice.invoice_id} via ${method}`,
-      balance_after_transaction: companyAccount.balance + totalAmount,
-    });
-
-    await transaction.save();
-
-    // Update company account balance
-    companyAccount.balance += totalAmount;
-    await companyAccount.save();
-
-    // Create a payment record
-    const paymentRecord = new Payment({
-      from_account_id: invoice.customer, // Assuming the customer account is the source
-      to_account_id: companyAccount._id, // Company account is the destination
-      amount: totalAmount,
-      payment_methods: [{ method: "Cash", amount: totalAmount }],
-      transaction_type: "Sale", // Adjust as necessary
-      references: {
-        customer: invoice.customer,
-        sale: invoice._id,
-      },
-      description: `Payment Recover from Customer Account for Invoice ${invoice.invoice_id}`,
-    });
-
-    //update invoice status to paid
-    invoice.status = "Paid";
-    invoice.total_paid_amount = invoice.total_amount;
-
-    invoice.payment_methods = [
-      {
-        method: "Account",
-        amount: invoice.total_amount, // Amount paid via this method
-        details: {
-          account_number: customerAccount._id,
-        },
-      },
-    ];
-
-    console.log("new invoice.status ", invoice.payment_methods);
-    await Promise.all([await paymentRecord.save(), await invoice.save()]);
-
-    //withdrawal from customer
-    const customer_transaction = new Transaction({
-      account_id: customerAccount._id,
-      amount: totalAmount,
-      transaction_type: "Withdrawal",
-      reason: `Auto Payment Deduct for Credit Sale Invoice  ${invoice_id} from Account`,
-      balance_after_transaction: customerAccount.balance - totalAmount,
-    });
-
-    await customer_transaction.save();
-
-    // Update customer account balance
-    customerAccount.balance -= totalAmount;
-    await customerAccount.save();
-  } else {
-    if (customerAccount.balance > 0 && customerAccount.balance <= totalAmount) {
-      // Create a transaction for the due amount
-      const transaction = new Transaction({
-        account_id: customerAccount._id,
-        amount: totalAmount - customerAccount.balance,
-        transaction_type: "Withdrawal",
-        reason: `Credit Sale Invoice Created ${invoice_id}`,
-        balance_after_transaction: customerAccount.balance - totalAmount,
-      });
-
-      await transaction.save();
-
-      // Update customer account balance
-      customerAccount.balance -= totalAmount;
-      await customerAccount.save();
-
-      // re-pay for company
-
-      const companytransaction = new Transaction({
-        account_id: companyAccount._id,
-        amount: customerAccount.balance,
-        transaction_type: "Deposit",
-        reason: `Payment re-transfer from customer account to company account, for this invoice  ${invoice_id}`,
-        balance_after_transaction:
-          companyAccount.balance - customerAccount.balance,
-      });
-
-      await companytransaction.save();
-
-      // Update customer account balance
-      companyAccount.balance -= totalAmount;
-      await companyAccount.save();
-    } else {
-      // Create a transaction for the due amount
-      const transaction = new Transaction({
-        account_id: customerAccount._id,
-        amount: totalAmount,
-        transaction_type: "Withdrawal",
-        reason: `Credit Sale Invoice Created ${invoice_id}`,
-        balance_after_transaction: customerAccount.balance - totalAmount,
-      });
-
-      await transaction.save();
-
-      // Update customer account balance
-      customerAccount.balance -= totalAmount;
-      await customerAccount.save();
-    }
-  }
-}
-
-async function logSaleInShift(shiftId, invoiceId, totalAmount) {
-  // Find the shift by ID
-  const shift = await Shift.findById(shiftId);
-  if (!shift) throw new Error("Shift not found");
-
-  // Update the shift's total sales and transaction count
-  shift.totalSales += totalAmount; // Increment total sales
-  shift.totalTransactions += 1; // Increment total transactions
-  shift.sales.push(invoiceId); // Assuming you have a sales array in the Shift schema
-
-  // Save the updated shift
-  await shift.save();
-}
+// End of helper functions before createSalesInvoice
 
 async function createSalesInvoice(
   customerId,
@@ -696,6 +361,25 @@ async function createSalesInvoice(
   global_discount_type = "Fixed",
   global_discount_value = 0
 ) {
+  // --- SHIFT GATE: Validate Terminal Status ---
+  if (!shiftId) throw new ApiError(400, "Terminal ID required for processing");
+  const activeShift = await Shift.findById(shiftId);
+  if (!activeShift) throw new ApiError(404, "Terminal session not found");
+  if (activeShift.status !== 'active') {
+    throw new ApiError(403, `Terminal Locked! Status: ${activeShift.status.toUpperCase()}. Please refresh your workstation.`);
+  }
+
+  // --- BUSINESS GUARD: VALIDATE ITEM DATA ---
+  for (const item of items) {
+    if (item.item_id) {
+      const dbItem = await Item.findById(item.item_id);
+      if (dbItem) {
+        // Force the DB truth regarding serialization if front-end is inconsistent
+        item.isSerialized = dbItem.serialized;
+      }
+    }
+  }
+
   const itemTotal = items.reduce((total, item) => total + item.totalPrice, 0);
   const serviceTotal =
     serviceItems && serviceItems.reduce((total, item) => total + item.total, 0);
@@ -808,7 +492,7 @@ async function createSalesInvoice(
   await updateInventory(items);
 
   // Update Sales shift
-  await logSaleInShift(shiftId, invoice.invoice_id, totalAmount);
+  await logSaleInShift(shiftId, invoice.invoice_id, totalAmount, payment_methods);
 
   // Generate separate warranty records
   try {
@@ -951,26 +635,35 @@ async function settleDuePayment(existingInvoice, updates) {
 
     // Loop through new payment methods and settle due
     for (const payment of newPaymentMethods) {
-      const { method, amount } = payment;
+      const { method, amount, target_account_id } = payment;
 
-      // Calculate the payment amount to apply
-      const paymentAmountToApply = Math.min(amount, settlementAmount);
+      // 1. Resolve Target Account
+      let targetAccountId = target_account_id;
+      let targetAccount = null;
+
+      if (targetAccountId) {
+        targetAccount = await Account.findById(targetAccountId);
+      } else {
+        targetAccount = companyAccount; // Default if not specified
+      }
+
+      if (!targetAccount) throw new Error("Target account not found");
 
       // Create a new transaction
       const transaction = new Transaction({
-        account_id: companyAccount._id,
+        account_id: targetAccount._id,
         amount: paymentAmountToApply,
         transaction_type: "Deposit",
         reason: `Due Payment Settled for Invoice ${existingInvoice.invoice_id} via ${method}`,
         description: `Settling due payment of ${paymentAmountToApply} for invoice ${existingInvoice.invoice_id} using ${method}`,
         balance_after_transaction:
-          companyAccount.balance + paymentAmountToApply,
+          targetAccount.balance + paymentAmountToApply,
       });
       await transaction.save();
 
       // Update company account balance
-      companyAccount.balance += paymentAmountToApply;
-      await companyAccount.save();
+      targetAccount.balance += paymentAmountToApply;
+      await targetAccount.save();
 
       // Update invoice status
       existingInvoice.status =
@@ -1636,44 +1329,7 @@ async function processPaymentReversal(
   }
 }
 
-async function updateInventoryReversal(items) {
-  try {
-    console.log("updateInventoryReversal() started ....\n");
-    const serializedItems = items.filter((item) => item.isSerialized);
-    const nonSerializedItems = items.filter((item) => !item.isSerialized);
-
-    // Revert serialized items
-    const serializedUpdates = serializedItems.map((item) => ({
-      updateOne: {
-        filter: { serialNumber: { $in: item.serialNumbers } },
-        update: { $set: { status: "Available", sold_date: null } },
-      },
-    }));
-    await SerializedStock.bulkWrite(serializedUpdates);
-
-    // Revert non-serialized items
-    const nonSerializedUpdates = nonSerializedItems.map((item) => ({
-      updateOne: {
-        filter: { item_id: item.item_id },
-        update: {
-          $inc: {
-            soldQty: -item.quantity,
-            availableQty: item.quantity,
-            /**
-             *
-             * In MongoDB, when using the $inc operator, you don't need to specify the plus sign (+) explicitly. The value you provide will be added to the existing value.
-             */
-          },
-        },
-      },
-    }));
-    await NonSerializedStock.bulkWrite(nonSerializedUpdates);
-    console.log("updateInventoryReversal() ended ....\n");
-  } catch (error) {
-    console.error("Error during inventory reversal:", error);
-    throw error;
-  }
-}
+// End of file
 
 async function logSaleInShiftReversal(shiftId, invoiceId, total_amount) {
   try {

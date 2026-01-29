@@ -14,6 +14,39 @@ exports.getAttributes = async (req, res) => {
     }
 };
 
+
+exports.quickSync = async (req, res) => {
+    const { key, value } = req.body;
+    const upperKey = key.toUpperCase().trim();
+    const cleanValue = value.trim();
+
+    try {
+        let attribute = await Attribute.findOne({ key: upperKey });
+
+        if (attribute) {
+            // Key exists: Check if value is already in the array
+            if (!attribute.values.includes(cleanValue)) {
+                attribute.values.push(cleanValue);
+                await attribute.save();
+            }
+        } else {
+            // Key doesn't exist: Create new attribute definition
+            attribute = new Attribute({
+                key: upperKey,
+                values: [cleanValue],
+                description: `Automatically created during item entry`,
+                order: 99 // Put at end of priority
+            });
+            await attribute.save();
+        }
+
+        res.status(200).json({ success: true, data: attribute });
+    } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+};
+
+
 /**
  * @desc    Create or Update an attribute
  * @route   POST /api/attributes

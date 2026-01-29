@@ -237,3 +237,64 @@ exports.getSystemInfo = async (req, res) => {
         res.status(500).json({ message: 'Failed to fetch system info' });
     }
 };
+/**
+ * Migration Task: Fix variants missing stockTracking configuration
+ * Inherits reorderPoint from parent Item
+ */
+exports.fixVariantStockTracking = async (req, res) => {
+    try {
+        const ItemVariant = require('../models/ItemVariantSchema');
+        const Item = require('../models/Items');
+
+        // 1. Find variants where stockTracking is missing
+        const brokenVariants = await ItemVariant.find({
+            $or: [
+                { stockTracking: { $exists: false } },
+                { "stockTracking.reorderPoint": { $exists: false } }
+            ]
+        });
+
+        const results = {
+            total_found: brokenVariants.length,
+            fixed: 0,
+            orphans: 0,
+            errors: 0,
+            details: []
+        };
+
+        for (const variant of brokenVariants) {
+            try {
+                const parentItem = await Item.findById(variant.item_id);
+
+                if (parentItem) {
+                    // Inject or update stockTracking
+                    const reorderPoint = parentItem.stockTracking?.reorderPoint || 0;
+
+                    variant.stockTracking = {
+                        currentStock: variant.stockTracking?.currentStock || 0,
+                        availableForSale: variant.stockTracking?.availableForSale || 0,
+                        reorderPoint: reorderPoint
+                    };
+
+                    await variant.save();
+                    results.fixed++;
+                } else {
+                    results.orphans++;
+                    results.details.push(`Orphan: ${variant.variantName} (ID: ${variant._id})`);
+                }
+            } catch (err) {
+                results.errors++;
+                results.details.push(`Error on ${variant.variantName}: ${err.message}`);
+            }
+        }
+
+        res.json({
+            success: true,
+            message: `Successfully updated ${results.fixed} variants.`,
+            results
+        });
+    } catch (error) {
+        console.error('Migration failed:', error);
+        res.status(500).json({ success: false, message: 'Migration failed', error: error.message });
+    }
+};

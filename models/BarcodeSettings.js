@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 const BarcodeSettingsSchema = new mongoose.Schema({
-    settingName: { type: String, required: true },
+  settingName: { type: String, required: true },
   bcid: { type: String, default: 'code128' },
   text: { type: String, default: '' },
   scale: { type: Number, default: 3 },
@@ -31,6 +31,9 @@ const BarcodeSettingsSchema = new mongoose.Schema({
   gap: { type: Number, default: 3 },
   gridColumns: { type: Number, default: 1 },
   orientation: { type: String, default: 'portrait' },
+  showPrice: { type: Boolean, default: true },
+  showBatteryHealth: { type: Boolean, default: true },
+  deviceMode: { type: String, default: 'both' },
   printItems: { type: Array, default: [] },
 });
 

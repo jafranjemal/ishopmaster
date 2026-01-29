@@ -63,6 +63,14 @@ const BarcodeTemplateSchema = new mongoose.Schema({
     type: Boolean,
     default: false, // Whether this template is the default
   },
+  showPrice: {
+    type: Boolean,
+    default: true,
+  },
+  showBatteryHealth: {
+    type: Boolean,
+    default: true,
+  },
   businessId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Business", // Optional, to associate with a specific business

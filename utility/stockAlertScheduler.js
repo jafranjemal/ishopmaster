@@ -1,13 +1,13 @@
 const nodeCron = require("node-cron");
-const Stock = require("../models/Stock"); // Adjust to your stock model path
 const { sendNotification } = require("../server"); // Ensure the correct path
+const SerializedStock = require("../models/SerializedStock");
 
 const stockAlertScheduler = () => {
   nodeCron.schedule("0 * * * *", async () => {
     console.log("Running stock alert scheduler...");
     try {
       // Fetch items with low stock
-      const lowStockItems = await Stock.find({ availableQty: { $lte: "alertQty" } });
+      const lowStockItems = await SerializedStock.find({ availableQty: { $lte: "alertQty" } });
 
       if (lowStockItems.length) {
         for (const item of lowStockItems) {

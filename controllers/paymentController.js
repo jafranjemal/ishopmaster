@@ -17,15 +17,24 @@ const updateAccountBalance = async (
     throw new Error("Account not found");
   }
 
-  const newBalance =
-    transactionType === "Deposit"
-      ? account.balance + amount
-      : account.balance - amount;
+  // Ensure amount is absolute for storage
+  const absAmount = Math.abs(amount);
+
+  /* --- 2. CORRECT LIABILITY ACCOUNTING --- */
+  const isLiability = account.account_type === 'Payable' || account.account_owner_type === 'Supplier';
+
+  // Deposits to a Payable account must DECREASE the debt (debit)
+  // Withdrawals from a Payable account must INCREASE the debt (credit)
+  const adjustment = (transactionType === "Deposit")
+    ? (isLiability ? -absAmount : absAmount)
+    : (isLiability ? absAmount : -absAmount);
+
+  const newBalance = account.balance + adjustment;
 
   // Create the transaction record
   const transaction = new Transaction({
     account_id: accountId,
-    amount: transactionType === "Deposit" ? amount : amount * -1,
+    amount: absAmount, // Store absolute value. Direction logic is implicit in Type + Account Nature.
     transaction_type: transactionType,
     reason,
     balance_after_transaction: newBalance,
@@ -64,12 +73,26 @@ const fetchSupplierName = async (supplierId) => {
   return supplier ? supplier.supplier_id : "Unknown Supplier";
 };
 
-const generateTransactionReason = async (transactionType, references) => {
-  const supplierName = await fetchSupplierName(references.supplier);
-  const purchaseOrdersWithReferences = await fetchPurchaseReferenceNumbers(
-    references.purchase_orders
-  );
-  return `${transactionType}: (${supplierName}) for [${purchaseOrdersWithReferences}]`;
+const generateTransactionReason = async (transactionType, references = {}) => {
+  let details = "";
+
+  if (references.supplier) {
+    const supplierName = await fetchSupplierName(references.supplier);
+    details += `(${supplierName}) `;
+  }
+
+  if (references.purchase_orders && Array.isArray(references.purchase_orders)) {
+    const purchaseOrdersWithReferences = await fetchPurchaseReferenceNumbers(
+      references.purchase_orders
+    );
+    details += `for [${purchaseOrdersWithReferences}]`;
+  }
+
+  if (references.sale) {
+    details += `Ref: ${references.sale}`;
+  }
+
+  return `${transactionType}: ${details.trim()}`;
 };
 
 // Controller function to handle payments
@@ -78,18 +101,80 @@ exports.addPayment = async (req, res) => {
     amount,
     description,
     from_account_id,
-    payment_methods,
+    payment_methods, // Array [{ method, amount }]
     references,
-    to_account_id,
+    to_account_id: manual_to_account_id, // explicit destination might be null
     transaction_type,
   } = req.body;
 
   try {
-    // Create and save the payment record
+    // Generate Reason String
     const reason = await generateTransactionReason(
       transaction_type,
       references
     );
+
+    // 1. Balance Protection (Hard Stop)
+    const sourceAccount = await Account.findById(from_account_id);
+    if (!sourceAccount) {
+      return res.status(404).json({ message: "Source account not found" });
+    }
+
+    if (sourceAccount.balance < amount && sourceAccount.account_type !== 'Credit Card') {
+      return res.status(400).json({ message: "Insufficient funds in selected account" });
+    }
+
+    // Resolve Transaction Chunks
+    // If explicit to_account_id is provided, single transaction.
+    // Else, iterate payment_methods to find targets.
+
+    let resolvedPayments = [];
+    const { resolveAccountForMethod } = require("../services/paymentMappingService");
+
+    if (manual_to_account_id) {
+      resolvedPayments.push({
+        targetAccountId: manual_to_account_id,
+        amount: amount,
+        method: "Manual"
+      });
+    } else if (payment_methods && payment_methods.length > 0) {
+      for (const p of payment_methods) {
+        const targetId = await resolveAccountForMethod(p.method);
+        resolvedPayments.push({
+          targetAccountId: targetId,
+          amount: p.amount,
+          method: p.method
+        });
+      }
+    } else {
+      // Fallback if no methods/account provided
+      const defaultId = await resolveAccountForMethod("Cash");
+      resolvedPayments.push({
+        targetAccountId: defaultId,
+        amount: amount,
+        method: "Cash"
+      });
+    }
+
+    // Process Withdrawal from Source (SINGLE DEBIT)
+    // We debit the total amount from 'from_account_id' once.
+    await updateAccountBalance(from_account_id, amount, "Withdrawal", reason);
+
+    // Process Deposits to Targets (MULTIPLE CREDITS)
+    for (const chunk of resolvedPayments) {
+      await updateAccountBalance(
+        chunk.targetAccountId,
+        chunk.amount,
+        "Deposit",
+        `Payment for ${reason} via ${chunk.method}`
+      );
+    }
+
+    // Save Payment Record
+    // Note: We store the FIRST resolved account as to_account_id for schema compliance, 
+    // but the real money moved to potentially multiple places.
+    // Ideally Payment model should support split destinations or we create multiple payments.
+    // For now, we save one record with metadata.
 
     const payment = new Payment({
       amount,
@@ -97,22 +182,10 @@ exports.addPayment = async (req, res) => {
       from_account_id,
       payment_methods,
       references,
-      to_account_id,
+      to_account_id: resolvedPayments[0].targetAccountId,
       transaction_type,
     });
     await payment.save();
-
-    // Update balances for involved accounts
-    if (to_account_id) {
-      await updateAccountBalance(
-        to_account_id,
-        amount,
-        "Deposit",
-        `Payment for ${reason}`
-      );
-    }
-
-    await updateAccountBalance(from_account_id, amount, "Withdrawal", reason);
 
     // Handle supplier payment-specific updates
     if (transaction_type === "Supplier Payment") {
@@ -148,8 +221,8 @@ const handleSupplierPaymentUpdates = async (purchaseOrders) => {
           newDueAmount === 0
             ? "Paid"
             : newDueAmount === grandTotal
-            ? "Not Paid"
-            : "Partial";
+              ? "Not Paid"
+              : "Partial";
 
         await purchase.updateOne({
           payment_due_amount: newDueAmount,
@@ -174,10 +247,10 @@ exports.getPayments = async (req, res) => {
       .populate('references.supplier')
       .populate('references.employee')
       .populate('references.customer')
-      .populate( 
+      .populate(
         'references.purchase_orders.purchase_id'
-        
-       )
+
+      )
       .populate({
         path: 'references.sale',
         populate: {
@@ -351,7 +424,7 @@ exports.getPaymentsByPurchaseId = async (req, res) => {
       {
         $match: {
           "references.purchase_orders.purchase_id":
-           new mongoose.Types.ObjectId(purchaseId),
+            new mongoose.Types.ObjectId(purchaseId),
         },
       },
       {
@@ -381,7 +454,7 @@ exports.getPaymentsByPurchaseId = async (req, res) => {
       { $unwind: "$from_account" },
       { $unwind: "$to_account" },
       { $unwind: { path: "$supplier", preserveNullAndEmptyArrays: true } },
-      { $sort : {"transaction_date": -1}}
+      { $sort: { "transaction_date": -1 } }
     ]);
     if (payments.length === 0) {
       return res

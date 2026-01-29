@@ -46,6 +46,7 @@ const purchaseReturnSchema = new mongoose.Schema({
         ref: 'Supplier',
         required: true
     },
+    agent_id: { type: mongoose.Schema.Types.ObjectId }, // Link to Supplier.contacts._id
     return_date: {
         type: Date,
         default: Date.now

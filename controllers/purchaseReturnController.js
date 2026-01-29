@@ -168,6 +168,7 @@ exports.createPurchaseReturn = async (req, res) => {
         const purchaseReturn = new PurchaseReturn({
             purchase: purchase_id,
             supplier: purchase.supplier,
+            agent_id: purchase.ref_agent_id, // Inherit agent from purchase
             items: returnItems,
             total_amount,
             reason,
@@ -316,8 +317,21 @@ exports.approvePurchaseReturn = async (req, res) => {
         if (purchase.payment_status === 'Paid' || purchase.payment_status === 'Partial') {
             // Credit supplier account
             const supplier = await Supplier.findById(purchaseReturn.supplier);
-            if (supplier && supplier.account) {
-                supplier.account.balance += purchaseReturn.total_amount;
+            if (supplier) {
+                // Adjust Overall Balance
+                supplier.financial.current_balance -= purchaseReturn.total_amount;
+
+                // Adjust Segment Utilization if agent is linked
+                if (purchaseReturn.agent_id) {
+                    const segment = supplier.financial.credit_segments.find(s =>
+                        s.agent_id?.toString() === purchaseReturn.agent_id.toString() ||
+                        s.name === purchaseReturn.purchase?.credit_segment_name
+                    );
+                    if (segment) {
+                        segment.utilized -= purchaseReturn.total_amount;
+                    }
+                }
+
                 await supplier.save();
                 reversed_amount = purchaseReturn.total_amount;
             }
