@@ -21,4 +21,8 @@ const NonSerializedStockSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 
+NonSerializedStockSchema.index({ item_id: 1, variant_id: 1, availableQty: 1 });
+NonSerializedStockSchema.index({ availableQty: 1 });
+NonSerializedStockSchema.index({ purchaseDate: -1 });
+
 module.exports = mongoose.model("NonSerializedStock", NonSerializedStockSchema);

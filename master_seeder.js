@@ -7,6 +7,8 @@ const BarcodeSettings = require('./models/BarcodeSettings');
 const Brand = require('./models/Brand');
 const PhoneModel = require('./models/PhoneModel');
 const Item = require('./models/Items');
+const { defaultPolicies } = require('./seeders/defaultPolicies');
+const WarrantyPolicy = require('./models/WarrantyPolicy');
 
 const MONGO_URI = process.env.NODE_ENV === 'production' ? process.env.PROD_URI : process.env.LOCAL_URI;
 
@@ -72,6 +74,8 @@ const seedMasterData = async (isScript = false, logCallback = null) => {
       { name: 'Pack', symbol: 'pack' }
     ];
     await Unit.insertMany(unitsArr, { session });
+
+    await WarrantyPolicy.insertMany(defaultPolicies, { session });
 
     // 2. Roles
     log('Seeding Roles...', 'warning');

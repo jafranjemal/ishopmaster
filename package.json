@@ -30,7 +30,7 @@
     "supertest": "^7.0.0"
   },
   "name": "api",
-  "version": "1.0.25",
+  "version": "1.0.26",
   "main": "server.js",
   "author": "jafran jemal",
   "license": "ISC",

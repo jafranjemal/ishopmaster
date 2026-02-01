@@ -61,6 +61,7 @@ const purchaseSchema = new mongoose.Schema({
       serializedItems: [
         {
           serialNumber: { type: String },
+          variant_id: { type: mongoose.Schema.Types.ObjectId, ref: "ItemVariant" },
           unitCost: { type: Number },
           sellingPrice: { type: Number },
           condition: { type: String },

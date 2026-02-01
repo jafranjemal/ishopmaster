@@ -23,6 +23,14 @@ const WarrantySchema = new mongoose.Schema({
         outcome: { type: String }
     }],
     warranty_proof_image: { type: String },
+    warranty_snapshot: {
+        policy_name: { type: String },
+        phase1_days: { type: Number },
+        phase2_days: { type: Number },
+        replacement_expiry: { type: Date },
+        service_expiry: { type: Date },
+        terms_list: [String]
+    },
     notes: { type: String }
 }, { timestamps: true });
 

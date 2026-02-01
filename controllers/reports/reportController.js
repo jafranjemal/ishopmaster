@@ -343,7 +343,7 @@ exports.getComprehensiveAudit = asyncHandler(async (req, res) => {
             health: deadStockList.length > 5 ? 'At Risk (Frozen Capital)' : 'Healthy Velocity'
         },
         strategy: strategyMessage,
-        version: "1.0.21"
+        version: "1.0.26"
     });
 });
 

@@ -34,4 +34,9 @@ const SerializedStockSchema = new mongoose.Schema({
 
 }, { timestamps: true });
 
+SerializedStockSchema.index({ item_id: 1, variant_id: 1, status: 1 });
+SerializedStockSchema.index({ serialNumber: 1 });
+SerializedStockSchema.index({ status: 1 });
+SerializedStockSchema.index({ purchaseDate: -1 });
+
 module.exports = mongoose.model("SerializedStock", SerializedStockSchema);

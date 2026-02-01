@@ -68,8 +68,11 @@ const itemSchema = new mongoose.Schema({
     phase2_days: Number,
     terms_list: [String],
     replacement_expiry: Date,
-    service_expiry: Date
+    service_expiry: Date,
+    warrantyPolicyId: { type: mongoose.Schema.Types.ObjectId, ref: 'WarrantyPolicy' }
   },
+  battery_health: { type: Number, required: false },
+  condition: { type: String, required: false },
   refurb_tags: [String]
 });
 

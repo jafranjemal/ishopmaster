@@ -2,7 +2,8 @@ const WarrantyPolicy = require("../models/WarrantyPolicy");
 
 exports.getPolicies = async (req, res) => {
     try {
-        const policies = await WarrantyPolicy.find({ is_deleted: false });
+        const policies = await WarrantyPolicy.find();
+        console.log("waranty policies", policies)
         res.status(200).json(policies);
     } catch (error) {
         res.status(500).json({ message: error.message });

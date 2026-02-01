@@ -185,12 +185,13 @@ exports.getAllItemsWithStock = async (req, res) => {
                 purchaseDate: "$purchaseDate",
                 unitCost: "$unitCost",
                 sellingPrice: "$sellingPrice",
-                invoiceNumber: { $ifNull: ["$purchaseDetails.referenceNumber", ""] }
+                invoiceNumber: { $ifNull: ["$purchaseDetails.referenceNumber", ""] },
+                purchasedItems: "$purchaseDetails.purchasedItems" // Keep for policy lookup
               }
             },
             itemDetails: { $first: "$itemDetails" }
           }
-        }
+        },
       ]),
       SerializedStock.aggregate([
         { $match: { status: "Available" } },
@@ -213,22 +214,46 @@ exports.getAllItemsWithStock = async (req, res) => {
                 purchaseDate: "$purchaseDate",
                 unitCost: "$unitCost",
                 sellingPrice: "$sellingPrice",
-                invoiceNumber: { $ifNull: ["$purchaseDetails.referenceNumber", ""] }
+                invoiceNumber: { $ifNull: ["$purchaseDetails.referenceNumber", ""] },
+                warrantyPolicyId: "$warrantyPolicyId" // Direct lookup
               }
             },
             itemDetails: { $first: "$itemDetails" }
           }
-        }
+        },
       ])
     ]);
 
     // Merge results from both models
-    const merged = [...nonSerialized, ...serialized].map(item => {
-      const batchDetails = item.batches.map(batch => ({
-        ...batch,
-        ageInDays: moment().diff(moment(batch.purchaseDate), "days"),
-        purchaseDate: moment(batch.purchaseDate).format("YYYY-MM-DD")
-      }));
+    const WarrantyPolicy = mongoose.model("WarrantyPolicy");
+    const merged = await Promise.all([...nonSerialized, ...serialized].map(async item => {
+      // Find warrantyPolicyId from batches
+      let foundPolicyId = null;
+
+      const batchDetails = item.batches.map(batch => {
+        if (!foundPolicyId) {
+          if (batch.warrantyPolicyId) {
+            foundPolicyId = batch.warrantyPolicyId;
+          } else if (batch.purchasedItems) {
+            const pi = batch.purchasedItems.find(i =>
+              i.item_id.toString() === item._id.toString()
+            );
+            if (pi?.warrantyPolicyId) foundPolicyId = pi.warrantyPolicyId;
+          }
+        }
+
+        return {
+          ...batch,
+          ageInDays: moment().diff(moment(batch.purchaseDate), "days"),
+          purchaseDate: moment(batch.purchaseDate).format("YYYY-MM-DD"),
+          purchasedItems: undefined // Clean up
+        };
+      });
+
+      let policyDetails = null;
+      if (foundPolicyId) {
+        policyDetails = await WarrantyPolicy.findById(foundPolicyId).lean();
+      }
 
       return {
         ...item.itemDetails,
@@ -237,9 +262,16 @@ exports.getAllItemsWithStock = async (req, res) => {
         lastUnitCost: item.lastUnitCost,
         lastSellingPrice: item.lastSellingPrice,
         serialized: item.itemDetails.serialized,
-
+        // Spread policy details if they exist
+        ...(policyDetails ? {
+          policy_name: policyDetails.name,
+          phase1_days: policyDetails.phase1_days,
+          phase2_days: policyDetails.phase2_days,
+          terms_list: policyDetails.terms_list,
+          warrantyPolicyId: policyDetails._id
+        } : {})
       };
-    });
+    }));
 
     res.json(merged.sort((a, b) => new Date(b.maxPurchaseDate) - new Date(a.maxPurchaseDate)));
   } catch (err) {

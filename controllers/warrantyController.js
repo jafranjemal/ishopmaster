@@ -18,22 +18,36 @@ exports.generateWarrantiesForInvoice = async (invoiceId) => {
     for (const item of invoice.items) {
         if (item.isSerialized && item.serialNumbers && item.serialNumbers.length > 0) {
             for (const serial of item.serialNumbers) {
-                const duration = item.warranty || 0;
+                const snapshot = item.warranty_snapshot;
+                const duration = snapshot
+                    ? (snapshot.phase1_days + snapshot.phase2_days)
+                    : (item.warranty || 0);
+
                 const unit = (item.warrantyUnit || "Days").toLowerCase();
                 const startDate = moment();
-                const endDate = moment().add(duration, unit);
+                const endDate = snapshot?.service_expiry
+                    ? moment(snapshot.service_expiry)
+                    : moment().add(duration, unit);
 
-                warranties.push({
-                    invoice_id: invoice._id,
-                    customer_id: invoice.customer,
-                    item_id: item.item_id._id,
-                    serial_number: serial,
-                    item_name: item.itemName,
-                    type: "Product",
-                    start_date: startDate.toDate(),
-                    duration_days: duration, // We store duration as provided
-                    end_date: endDate.toDate(),
-                });
+                if (duration > 0) {
+                    warranties.push({
+                        invoice_id: invoice._id,
+                        customer_id: invoice.customer,
+                        item_id: item.item_id._id,
+                        serial_number: serial,
+                        item_name: item.itemName,
+                        type: "Product",
+                        start_date: startDate.toDate(),
+                        duration_days: duration,
+                        end_date: endDate.toDate(),
+                        warranty_snapshot: {
+                            ...item.warranty_snapshot,
+                            battery_health: item.battery_health,
+                            condition: item.condition
+                        },
+                        notes: item.refurb_tags?.length > 0 ? `Refurbished: ${item.refurb_tags.join(", ")}` : ""
+                    });
+                }
             }
         }
         // DELETED: Fallback for non-serialized items. No serial = No warranty record.
@@ -47,16 +61,18 @@ exports.generateWarrantiesForInvoice = async (invoiceId) => {
             const startDate = moment();
             const endDate = moment().add(duration || 90, unit);
 
-            warranties.push({
-                invoice_id: invoice._id,
-                customer_id: invoice.customer,
-                item_id: service.serviceItemId,
-                item_name: service.name,
-                type: "Service",
-                start_date: startDate.toDate(),
-                duration_days: duration || 90,
-                end_date: endDate.toDate(),
-            });
+            if (duration > 0) {
+                warranties.push({
+                    invoice_id: invoice._id,
+                    customer_id: invoice.customer,
+                    item_id: service.serviceItemId,
+                    item_name: service.name,
+                    type: "Service",
+                    start_date: startDate.toDate(),
+                    duration_days: duration,
+                    end_date: endDate.toDate(),
+                });
+            }
         }
     }
 
@@ -95,23 +111,43 @@ exports.claimWarranty = async (req, res) => {
             return res.status(400).json({ message: `Warranty is not active. Status: ${warranty.status}` });
         }
 
-        if (new Date() > warranty.end_date) {
-            warranty.status = "Expired";
-            await warranty.save();
-            return res.status(400).json({ message: "Warranty has expired" });
+        const now = new Date();
+        const snapshot = warranty.warranty_snapshot;
+
+        if (!snapshot) {
+            // Fallback for legacy records without snapshots
+            if (now > warranty.end_date) {
+                warranty.status = "Expired";
+                await warranty.save();
+                return res.status(400).json({ message: "Warranty has expired" });
+            }
+        } else {
+            // Policy-Aware Validation
+            if (now > new Date(snapshot.service_expiry)) {
+                warranty.status = "Expired";
+                await warranty.save();
+                return res.status(400).json({ message: "Warranty service coverage has expired" });
+            }
+
+            // Determine Phase
+            const isReplacementPhase = now <= new Date(snapshot.replacement_expiry);
+            const phaseLabel = isReplacementPhase ? "Replacement Phase" : "Service Phase";
+
+            // Log claim with phase info
+            warranty.claims.push({
+                ticket_id,
+                claim_date: now,
+                reason: `${phaseLabel}: ${reason}`,
+                outcome: "Pending"
+            });
         }
 
-        // Attach claim to warranty
-        warranty.claims.push({
-            ticket_id,
-            claim_date: new Date(),
-            reason,
-            outcome: "Pending"
-        });
-
         await warranty.save();
-
-        res.status(200).json({ message: "Warranty claim recorded.", warranty });
+        res.status(200).json({
+            message: "Warranty claim recorded.",
+            phase: snapshot ? (now <= new Date(snapshot.replacement_expiry) ? "Replacement" : "Service") : "Standard",
+            warranty
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -155,12 +191,30 @@ exports.getWarranties = async (req, res) => {
 
         if (status) query.status = status;
         if (type) query.type = type;
+        // if (search) {
+        //     query.$or = [
+        //         { _id: { $regex: search, } },
+        //         { warranty_id: { $regex: search, } },
+        //         { invoice_id: { $regex: search, } },
+        //         { item_name: { $regex: search, $options: "i" } },
+        //         { serial_number: { $regex: search, $options: "i" } },
+
+        //     ];
+        // }
+
         if (search) {
-            query.$or = [
-                { warranty_id: { $regex: search, $options: "i" } },
+            const orConditions = [
                 { item_name: { $regex: search, $options: "i" } },
                 { serial_number: { $regex: search, $options: "i" } }
             ];
+
+            // Check if the search string is a valid MongoDB ObjectId
+            if (mongoose.Types.ObjectId.isValid(search)) {
+                orConditions.push({ warranty_id: search });
+                orConditions.push({ invoice_id: search });
+            }
+
+            query.$or = orConditions;
         }
 
         const warranties = await Warranty.find(query)

@@ -210,7 +210,7 @@ exports.createPurchase = async (req, res) => {
               [
                 {
                   item_id: item.item_id,
-                  variant_id: unit.variant_id,
+                  variant_id: item.variant_id || unit.variant_id,
                   purchase_id: purchaseDoc._id,
                   purchaseDate: purchaseDoc.purchaseDate,
                   serialNumber: unit.serialNumber,
