@@ -12,7 +12,7 @@ const dbUri = process.env.NODE_ENV === 'production' ? mongoUri : localUri;
 
 const connectDB = async () => {
     try {
-        await mongoose.connect(localUri);
+        await mongoose.connect(dbUri);
         console.log('MongoDB Connected');
     } catch (err) {
         console.error('Database connection error:', err.message);
