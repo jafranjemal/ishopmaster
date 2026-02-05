@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const SalesInvoice = require("../models/SalesInvoice");
 const Account = require("../models/Account");
 const Transaction = require("../models/Transaction");
@@ -162,68 +163,66 @@ async function processPayment(invoiceId, paymentDetails) {
   if (!customerAccount) throw new Error("Customer account not found");
 
   let totalPaid = 0;
-  let totalAmount = 0;
-
-  // Payment Mapping Service
   const { resolveAccountForMethod } = require("../services/paymentMappingService");
 
-  for (const payment of paymentDetails) {
-    const { method, amount, target_account_id } = payment;
-    if (amount && amount > 0) {
-      totalAmount += amount;
+  // 1. Map and Sanitize Payment Methods
+  const processedMethods = [];
 
-      // 1. Resolve Target Account Dynamically
+  for (const payment of paymentDetails) {
+    if (payment.amount && payment.amount > 0) {
+      // Resolve Target Account (Company Cash/Bank)
       let targetAccountId = payment.target_account_id;
       if (!targetAccountId) {
-        targetAccountId = await resolveAccountForMethod(method);
+        targetAccountId = await resolveAccountForMethod(payment.method);
       }
       const targetAccount = await Account.findById(targetAccountId);
+      if (!targetAccount) throw new Error(`Target account for method ${payment.method} not found.`);
 
-      if (!targetAccount) throw new Error(`Target account for method ${method} not found.`);
-
-      // 2. Deposit logic for Target Account (Company Cash/Bank)
-      // Asset: Deposit = Increase (+)
+      // Deposit to Target Account
       const targetTransaction = new Transaction({
         account_id: targetAccount._id,
-        amount: amount,
+        amount: payment.amount,
         transaction_type: "Deposit",
-        reason: `Payment for Invoice ${invoice.invoice_id} via ${method}`,
-        balance_after_transaction: targetAccount.balance + amount,
+        reason: `Payment for Invoice ${invoice.invoice_id} via ${payment.method}`,
+        balance_after_transaction: targetAccount.balance + payment.amount,
       });
       await targetTransaction.save();
 
-      targetAccount.balance += amount;
+      targetAccount.balance += payment.amount;
       await targetAccount.save();
 
-      // 3. Create Payment Record
-      // from: Customer, to: Target Company Account
-      const paymentRecord = new Payment({
-        from_account_id: customerAccount._id, // Source: Customer
-        to_account_id: targetAccount._id,     // Destination: Mapped Company Account
-        amount: amount,
-        payment_methods: [{ method: method, amount: amount }], // Track specific chunk
-        transaction_type: "Sale",
-        references: {
-          customer: invoice.customer,
-          sale: invoice._id,
-        },
-        description: `Payment for Invoice ${invoice.invoice_id} via ${method}`,
+      // Collect for consolidated Payment document
+      processedMethods.push({
+        method: payment.method,
+        amount: Number(payment.amount),
+        from_account_id: customerAccount._id, // Source
+        details: payment.details || {}
       });
-      await paymentRecord.save();
 
-      // 4. Update Invoice Paid Amount
-      totalPaid += amount;
+      totalPaid += payment.amount;
     }
   }
 
-  // Handle Overpayment / Credit Balance logic if needed
-  // Note: Previous logic handled split payments and overpayments complexly. 
-  // Simplified here to Focus on CORRECT ROUTING.
-  // Ideally, if (totalPaid > invoice.total_amount), the excess should be credited to Customer Account balance.
+  if (processedMethods.length > 0) {
+    // 2. Create Consolidated Payment Record
+    const paymentRecord = new Payment({
+      from_account_id: customerAccount._id,
+      to_account_id: processedMethods[0].target_account_id || (await resolveAccountForMethod(processedMethods[0].method)),
+      amount: totalPaid,
+      payment_methods: processedMethods,
+      transaction_type: "Sale",
+      references: {
+        customer: invoice.customer,
+        sale: invoice._id,
+      },
+      description: `Consolidated Payment for Invoice ${invoice.invoice_id}`,
+    });
+    await paymentRecord.save();
+  }
 
+  // 3. Handle Overpayment
   if (totalPaid > invoice.total_amount) {
     const overpaid = totalPaid - invoice.total_amount;
-    // Credit the customer account (Deposit)
     const creditTransaction = new Transaction({
       account_id: customerAccount._id,
       amount: overpaid,
@@ -236,20 +235,12 @@ async function processPayment(invoiceId, paymentDetails) {
     await customerAccount.save();
   }
 
-  const invoiceStatus =
-    totalPaid === 0
-      ? "Unpaid"
-      : totalPaid >= invoice.total_amount
-        ? "Paid"
-        : "Partially paid";
-
+  const invoiceStatus = totalPaid === 0 ? "Unpaid" : totalPaid >= invoice.total_amount ? "Paid" : "Partially paid";
   invoice.status = invoiceStatus;
-  invoice.total_paid_amount = Math.min(totalPaid, invoice.total_amount); // Cap at total? Or allow tracking overpayment? Typically cap paid field, credit rest.
+  invoice.total_paid_amount = Math.min(totalPaid, invoice.total_amount);
 
   if (invoiceStatus === "Partially paid" || invoiceStatus === "Unpaid") {
-    // update balance as a Due for customer account
     const dueAmount = invoice.total_amount - totalPaid;
-    // Debiting customer account for Due is handled in handleCreditSale or similar
     await handleCreditSale(invoice.customer, dueAmount, invoice.invoice_id);
   }
 
@@ -300,7 +291,7 @@ async function handleCreditSale(customerId, totalAmount, invoice_id) {
       from_account_id: invoice.customer,
       to_account_id: companyAccount._id,
       amount: totalAmount,
-      payment_methods: [{ method: "Account", amount: totalAmount, details: { account_number: customerAccount._id } }],
+      payment_methods: [{ method: "Account", amount: totalAmount, from_account_id: invoice.customer, details: { account_number: customerAccount._id } }],
       transaction_type: "Sale",
       references: {
         customer: invoice.customer,
@@ -316,6 +307,7 @@ async function handleCreditSale(customerId, totalAmount, invoice_id) {
     invoice.payment_methods.push({
       method: "Account",
       amount: invoice.total_amount,
+      from_account_id: invoice.customer,
       details: { account_number: customerAccount._id }
     });
     await invoice.save();
@@ -370,7 +362,8 @@ async function createSalesInvoice(
   ticketId = null,
   global_discount_type = "Fixed",
   global_discount_value = 0,
-  invoice_date = null
+  invoice_date = null,
+  session = null // MongoDB session for transaction safety
 ) {
   // --- SHIFT GATE: Validate Terminal Status ---
   if (!shiftId) throw new ApiError(400, "Terminal ID required for processing");
@@ -1208,8 +1201,14 @@ exports.updateSalesInvoice = async (req, res) => {
           await existingInvoice.save();
 
           // 4. Now check new payment method, if any methods found then create a transaction
+          // Ensure each payment method has the from_account_id if missing
+          const companyAccount = await Account.findOne({ account_owner_type: "Company" });
+          const sanitizedPaymentMethods = payment_methods.map(pm => ({
+            ...pm,
+            from_account_id: pm.from_account_id || existingInvoice.customer // Fallback to customer ID (backend finds account)
+          }));
 
-          await processPayment(existingInvoice.invoice_id, payment_methods);
+          await processPayment(existingInvoice.invoice_id, sanitizedPaymentMethods);
 
           // Return success response
           res.status(200).json({

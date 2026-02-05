@@ -21,7 +21,9 @@ const StockLedgerSchema = new mongoose.Schema({
       "Adjustment-In",
       "Adjustment-Out",
       "Damage",
-      "Correction"
+      "Correction",
+      "Reversal-In",
+      "Reversal-Out"
     ],
     required: true
   },
