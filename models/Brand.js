@@ -11,5 +11,12 @@ const brandSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+brandSchema.pre('save', function (next) {
+  if (this.isModified('name')) {
+    this.name = this.name.toUpperCase();
+  }
+  next();
+});
+
 const Brand = mongoose.model("Brand", brandSchema);
 module.exports = Brand

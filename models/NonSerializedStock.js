@@ -12,7 +12,7 @@ const NonSerializedStockSchema = new mongoose.Schema({
   unitCost: { type: Number, required: true }, // Purchase price per unit
   beforePurchaseAvailableQty: { type: Number, required: false, default: 0 }, // Purchase price per unit
   sellingPrice: { type: Number, required: true }, // Selling price per unit
-  condition: { type: String, enum: ["Brand New", "Like New", "Open Box", "Used Grade A", "Used Grade B", "Used", "Pre-Owned", "Refurbished", "Active", "Non-Active", "Damaged"], required: true },
+  condition: { default: "Brand New", type: String, enum: ["Brand New", "Like New", "Open Box", "Used Grade A", "Used Grade B", "Used", "Pre-Owned", "Refurbished", "Active", "Non-Active", "Damaged"], required: true },
   expiryDate: { type: Date }, // Optional: Expiry date for consumables
   adjustmentReason: { type: String }, // Optional: Reason for adjustment
   unit: { type: String }, // Optional: Reason for adjustment

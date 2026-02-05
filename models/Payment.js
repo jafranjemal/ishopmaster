@@ -79,6 +79,11 @@ const paymentSchema = new mongoose.Schema({
         },
       },
       amount: { type: Number, required: true }, // Amount paid via this method
+      from_account_id: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Account",
+        required: true,
+      },
     },
   ],
   transaction_type: {
@@ -105,6 +110,8 @@ paymentSchema.pre('save', function (next) {
   next();
 });
 
+
+paymentSchema.plugin(require('mongoose-paginate-v2'));
 const Payment = mongoose.model("Payment", paymentSchema);
 
 module.exports = Payment;

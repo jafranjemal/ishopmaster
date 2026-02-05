@@ -84,7 +84,7 @@ const ItemSchema = new mongoose.Schema(
 
 
     warranty: { type: String },
-    condition: { type: String },
+    condition: { type: String, default: "new" },
 
     // START TOON ENHANCEMENTS (ITEM_MASTER)
     serviceAttributes: {
@@ -116,7 +116,19 @@ const ItemSchema = new mongoose.Schema(
         purchaseId: { type: mongoose.Schema.Types.ObjectId, ref: 'Purchase' }
       }]
     },
-
+    // HIERARCHY FIELDS
+    hasVariants: {
+      type: Boolean,
+      default: false
+    },
+    variantCount: {
+      type: Number,
+      default: 0
+    },
+    isLegacy: {
+      type: Boolean,
+      default: false
+    },
 
     createdAt: { type: Date, default: Date.now }, // Creation timestamp
     updatedAt: { type: Date, default: Date.now }, // Update timestamp

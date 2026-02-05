@@ -8,6 +8,9 @@ router.post("/", transactionController.createTransaction);
 // Get all transactions
 router.get("/", transactionController.getAllTransactions);
 
+// Paginated transactions
+router.get("/paginated", transactionController.getTransactionsWithOptions);
+
 // Get all transactions for a specific account
 router.get("/account/:account_id", transactionController.getTransactionsByAccount);
 

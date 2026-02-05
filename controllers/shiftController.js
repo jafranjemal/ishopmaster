@@ -32,7 +32,10 @@ exports.createShift = async (req, res) => {
     if (!drawerAccount) throw new Error("Cash Drawer account not found");
 
     if (drawerAccount.activeShiftId) {
-      throw new Error("Collision Guard: This account is already linked to an active session.");
+      const linkedShift = await Shift.findById(drawerAccount.activeShiftId).session(session);
+      if (linkedShift && linkedShift.status === 'active') {
+        throw new Error("Collision Guard: This account is already linked to an active session.");
+      }
     }
 
     const physicalCash = Number(startCash);

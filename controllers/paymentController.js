@@ -114,20 +114,33 @@ exports.addPayment = async (req, res) => {
       references
     );
 
-    // 1. Balance Protection (Hard Stop)
-    const sourceAccount = await Account.findById(from_account_id);
-    if (!sourceAccount) {
-      return res.status(404).json({ message: "Source account not found" });
+    // 1. Validate Total Amount and Sources
+    if (payment_methods && payment_methods.length > 0) {
+      const calculatedTotal = payment_methods.reduce((sum, p) => sum + (p.amount || 0), 0);
+      if (Math.abs(calculatedTotal - amount) > 0.01) {
+        return res.status(400).json({ message: "Total amount mismatch between methods and summary" });
+      }
+
+      for (const meth of payment_methods) {
+        if (!meth.from_account_id) {
+          return res.status(400).json({ message: "Source account missing for split method" });
+        }
+        const acc = await Account.findById(meth.from_account_id);
+        if (!acc) return res.status(404).json({ message: `Source account not found for method ${meth.method}` });
+        if (acc.balance < meth.amount && acc.account_type !== 'Credit Card') {
+          return res.status(400).json({ message: `Insufficient funds in ${acc.account_name}` });
+        }
+      }
+    } else {
+      // Single source fallback logic
+      const sourceAccount = await Account.findById(from_account_id);
+      if (!sourceAccount) return res.status(404).json({ message: "Source account not found" });
+      if (sourceAccount.balance < amount && sourceAccount.account_type !== 'Credit Card') {
+        return res.status(400).json({ message: "Insufficient funds in selected account" });
+      }
     }
 
-    if (sourceAccount.balance < amount && sourceAccount.account_type !== 'Credit Card') {
-      return res.status(400).json({ message: "Insufficient funds in selected account" });
-    }
-
-    // Resolve Transaction Chunks
-    // If explicit to_account_id is provided, single transaction.
-    // Else, iterate payment_methods to find targets.
-
+    // Resolve Destination Targets (CREDITS)
     let resolvedPayments = [];
     const { resolveAccountForMethod } = require("../services/paymentMappingService");
 
@@ -137,8 +150,9 @@ exports.addPayment = async (req, res) => {
         amount: amount,
         method: "Manual"
       });
-    } else if (payment_methods && payment_methods.length > 0) {
-      for (const p of payment_methods) {
+    } else {
+      // Determine destination via mapping if not explicit
+      for (const p of (payment_methods || [{ method: "Cash", amount: amount }])) {
         const targetId = await resolveAccountForMethod(p.method);
         resolvedPayments.push({
           targetAccountId: targetId,
@@ -146,19 +160,16 @@ exports.addPayment = async (req, res) => {
           method: p.method
         });
       }
-    } else {
-      // Fallback if no methods/account provided
-      const defaultId = await resolveAccountForMethod("Cash");
-      resolvedPayments.push({
-        targetAccountId: defaultId,
-        amount: amount,
-        method: "Cash"
-      });
     }
 
-    // Process Withdrawal from Source (SINGLE DEBIT)
-    // We debit the total amount from 'from_account_id' once.
-    await updateAccountBalance(from_account_id, amount, "Withdrawal", reason);
+    // Process Withdrawals from Sources (MULTIPLE DEBITS)
+    if (payment_methods && payment_methods.length > 0) {
+      for (const p of payment_methods) {
+        await updateAccountBalance(p.from_account_id, p.amount, "Withdrawal", `${reason} (Method: ${p.method})`);
+      }
+    } else {
+      await updateAccountBalance(from_account_id, amount, "Withdrawal", reason);
+    }
 
     // Process Deposits to Targets (MULTIPLE CREDITS)
     for (const chunk of resolvedPayments) {
@@ -170,16 +181,10 @@ exports.addPayment = async (req, res) => {
       );
     }
 
-    // Save Payment Record
-    // Note: We store the FIRST resolved account as to_account_id for schema compliance, 
-    // but the real money moved to potentially multiple places.
-    // Ideally Payment model should support split destinations or we create multiple payments.
-    // For now, we save one record with metadata.
-
     const payment = new Payment({
       amount,
       description,
-      from_account_id,
+      from_account_id: from_account_id || (payment_methods && payment_methods[0]?.from_account_id),
       payment_methods,
       references,
       to_account_id: resolvedPayments[0].targetAccountId,
@@ -276,7 +281,8 @@ exports.getPaymentsWithOptions = async (req, res) => {
       limit = 10,
       transaction_type,
       start_date,
-      end_date
+      end_date,
+      search
     } = req.query;
 
     const query = {};
@@ -292,6 +298,16 @@ exports.getPaymentsWithOptions = async (req, res) => {
       if (end_date) query.transaction_date.$lte = new Date(end_date);
     }
 
+    // Generic search across multiple fields
+    if (search) {
+      const searchRegex = new RegExp(search, 'i');
+      query.$or = [
+        { payment_id: searchRegex },
+        { description: searchRegex },
+        { 'references.agent_name': searchRegex }
+      ];
+    }
+
     const options = {
       page: parseInt(page),
       limit: parseInt(limit),
@@ -303,17 +319,18 @@ exports.getPaymentsWithOptions = async (req, res) => {
         { path: 'references.customer' },
         {
           path: 'references.purchase_orders.purchase_id',
-          populate: {
-            path: 'supplier items.item_id'
-          }
+          populate: [
+            { path: 'supplier' }
+          ]
         },
         {
           path: 'references.sale',
-          populate: {
-            path: 'customer items.item_id'
-          }
+          populate: [
+            { path: 'customer' }
+          ]
         }
-      ]
+      ],
+      strictPopulate: false
     };
 
     const payments = await Payment.paginate(query, options);

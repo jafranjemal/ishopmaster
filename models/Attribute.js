@@ -10,7 +10,8 @@ const attributeSchema = new mongoose.Schema({
     },
     values: [{
         type: String,
-        trim: true
+        trim: true,
+        uppercase: true
     }],
     description: {
         type: String,
@@ -24,4 +25,10 @@ const attributeSchema = new mongoose.Schema({
     timestamps: true
 });
 
+attributeSchema.pre('save', function (next) {
+    if (this.isModified('key')) {
+        this.key = this.key.toUpperCase();
+    }
+    next();
+});
 module.exports = mongoose.model('Attribute', attributeSchema);

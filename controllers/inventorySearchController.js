@@ -52,7 +52,10 @@ exports.posSearch = async (req, res) => {
                 })
             }).populate({
                 path: 'item_id',
-                match: activeCategory ? { category: activeCategory } : {},
+                match: {
+                    ...(activeCategory ? { category: activeCategory } : {}),
+                    notForSelling: false
+                }
             }).sort({ createdAt: -1 }).limit(parseInt(limit)).lean(),
 
             Item.find({
@@ -62,7 +65,8 @@ exports.posSearch = async (req, res) => {
                         { barcode: searchTerm }
                     ]
                 }),
-                ...(activeCategory ? { category: activeCategory } : {})
+                ...(activeCategory ? { category: activeCategory } : {}),
+                notForSelling: false
             }).sort({ createdAt: -1 }).limit(parseInt(limit)).lean()
         ]);
 

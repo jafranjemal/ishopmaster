@@ -20,6 +20,7 @@ router.post('/:id/pay', salesInvoiceController.processPayment);
 // Professional return flow
 router.post('/:id/return', salesInvoiceController.processReturn);
 
-router.delete('/:id', salesInvoiceController.deleteInvoice);
+
+router.get("/due/customer/:id", salesInvoiceController.getDueSalesByCustomerId);
 
 module.exports = router;

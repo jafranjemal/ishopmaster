@@ -173,3 +173,55 @@ exports.deleteTransaction = async (req, res) => {
     res.status(500).json({ message: "Error deleting transaction", error });
   }
 };
+// Paginated fetching with filtering and search
+exports.getTransactionsWithOptions = async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 10,
+      transaction_type,
+      start_date,
+      end_date,
+      search,
+    } = req.query;
+
+    const query = {};
+
+    if (transaction_type) {
+      query.transaction_type = transaction_type;
+    }
+
+    if (start_date || end_date) {
+      query.transaction_date = {};
+      if (start_date) query.transaction_date.$gte = new Date(start_date);
+      if (end_date) query.transaction_date.$lte = new Date(end_date);
+    }
+
+    if (search) {
+      const searchRegex = new RegExp(search, "i");
+      query.$or = [
+        { reason: searchRegex },
+        { segment_id: searchRegex },
+      ];
+    }
+
+    const options = {
+      page: parseInt(page),
+      limit: parseInt(limit),
+      populate: { path: "account_id" },
+      sort: { transaction_date: -1 },
+    };
+
+    const result = await Transaction.paginate(query, options);
+
+    res.status(200).json({
+      transactions: result.docs,
+      totalPages: result.totalPages,
+      currentPage: result.page,
+      totalRecords: result.totalDocs,
+    });
+  } catch (error) {
+    console.error("Error fetching transactions:", error);
+    res.status(500).json({ message: "Error fetching transactions", error: error.message });
+  }
+};

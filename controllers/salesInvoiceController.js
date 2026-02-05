@@ -51,6 +51,12 @@ async function updateInventory(items) {
         if (stockRecord) {
           stockRecord.availableQty = Math.max(0, stockRecord.availableQty - quantity);
           stockRecord.soldQty = (stockRecord.soldQty || 0) + quantity;
+
+          // Ensure required fields exist before saving to avoid validation errors for legacy data
+          if (!stockRecord.condition) {
+            stockRecord.condition = "Brand New";
+          }
+
           await stockRecord.save();
 
           await logToLedger({
@@ -1503,3 +1509,17 @@ async function logSaleInShiftReversal(shiftId, invoiceId, total_amount) {
     throw error;
   }
 }
+
+exports.getDueSalesByCustomerId = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const dueInvoices = await SalesInvoice.find({
+      customerId: id,
+      payment_status: { $ne: "Paid" },
+    }).sort({ invoice_date: -1 });
+
+    res.status(200).json(dueInvoices);
+  } catch (error) {
+    res.status(500).json({ message: "Error fetching due sales", error });
+  }
+};

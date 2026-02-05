@@ -11,5 +11,6 @@ const transactionSchema = new mongoose.Schema({
   segment_id: { type: String }, // Optional link to specific brand segment
 });
 
+transactionSchema.plugin(require('mongoose-paginate-v2'));
 const Transaction = mongoose.model("Transaction", transactionSchema);
 module.exports = Transaction;

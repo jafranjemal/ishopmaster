@@ -54,10 +54,10 @@ exports.getItemStockDetails = async (req, res) => {
               $push: {
                 batch_number: "$batch_number",
                 serialNumber: "$serialNumber",
+                condition: "$condition",
                 purchaseDate: "$purchaseDate",
                 unitCost: "$unitCost",
                 sellingPrice: "$sellingPrice",
-                purchaseDate: "$purchaseDate",
                 purchase_id: "$purchase_id",
               },
             },
@@ -87,6 +87,7 @@ exports.getItemStockDetails = async (req, res) => {
               $push: {
                 batch_number: "$batch_number",
                 availableQty: "$availableQty",
+                condition: "$condition",
                 unitCost: "$unitCost",
                 purchaseDate: "$purchaseDate",
                 purchase_id: "$purchase_id",
@@ -182,6 +183,7 @@ exports.getAllItemsWithStock = async (req, res) => {
               $push: {
                 batch_number: "$batch_number",
                 availableQty: "$availableQty",
+                condition: "$condition",
                 purchaseDate: "$purchaseDate",
                 unitCost: "$unitCost",
                 sellingPrice: "$sellingPrice",
@@ -210,6 +212,7 @@ exports.getAllItemsWithStock = async (req, res) => {
               $push: {
                 batch_number: "$batch_number",
                 serialNumber: "$serialNumber",
+                condition: "$condition",
                 availableQty: 1,
                 purchaseDate: "$purchaseDate",
                 unitCost: "$unitCost",
@@ -2166,11 +2169,12 @@ exports.getUnifiedStock = async (req, res) => {
           ...variantMatches.map(v => v.item_id)
         ];
 
-        query._id = { $in: ids };
       }
     }
 
-    let itemsQuery = Items.find(query).lean();
+    query.notForSelling = false;
+
+    let itemsQuery = Item.find(query).lean();
     if (page && limit) {
       itemsQuery = itemsQuery.skip((+page - 1) * +limit).limit(+limit);
     }

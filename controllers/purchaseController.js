@@ -466,20 +466,43 @@ exports.searchPurchases = async (req, res) => {
 exports.getPurchaseById = async (req, res) => {
   try {
     const { id } = req.params;
+
     const purchase = await Purchase.findById(id)
-      .populate("supplier")
-      .populate("customer")
-      .populate("purchasedItems.item_id")
-      .populate("purchasedItems.variant_id");
+      .populate("supplier customer source_po_id")
+      .populate({
+        path: "purchasedItems",
+        populate: [
+          {
+            path: "item_id",
+            populate: ["manufacturerId", "phoneModelId"]
+          },
+          {
+            path: "variant_id"
+          },
+          {
+            // This path ensures your FormikPolicySelect gets the actual policy data
+            path: "serializedItems.warrantyPolicyId"
+          },
+          {
+            // Populate variant if you need to show specific specs per serial
+            path: "serializedItems.variant_id"
+          }
+        ]
+      });
+
     if (!purchase) {
-      return res.status(404).json({ message: "Purchase not found" });
+      return res.status(404).json({ message: "Purchase bill not found." });
     }
+
     res.status(200).json(purchase);
   } catch (error) {
-    res.status(500).json({ message: "Error retrieving purchase", error });
+    console.error("Population Error:", error);
+    res.status(500).json({
+      message: "Something went wrong loading the bill.",
+      error: error.message
+    });
   }
 };
-
 /**
  * verifyPurchasePhysical:
  * Confirms that the physical stock matches the purchase order.
@@ -1443,8 +1466,7 @@ const buildSerializedMap = (purchaseItems) => {
 // Utility: stable key for non-serialized lines (prefer line._id)
 const keyForNonSerialized = (line) => {
   if (!line) return null;
-  if (line._id) return `LINE_${String(line._id)}`;
-  return `ITEM_${String(line.item_id)}_VAR_${String(line.variant_id || "")}`;
+  return `ITEM_${String(line.item_id)}_VAR_${String(line.variant_id || "null")}`;
 };
 
 exports.updatePurchase = async (req, res) => {
