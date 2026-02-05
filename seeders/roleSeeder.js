@@ -63,12 +63,20 @@ const modulePermissions = {
 // Define role permissions mapping
 const rolePermissionsMap = {
   Admin: Object.keys(modulePermissions),
-  Manager: ['dashboard', 'customers', 'employee', 'sales', 'stock', 'intelligence', 'companyAccount', 'customersAccount', 'supplierAccount', 'employeeAccount'],
-  Sales: ['pos', 'customers', 'sales'],
-  Cashier: ['pos', 'payments'],
+  Manager: [
+    'dashboard', 'customers', 'employee', 'items', 'payments', 'pos',
+    'purchase', 'repair', 'sales', 'stock', 'suppliers', 'intelligence',
+    'barcode', 'units', 'companyAccount', 'customersAccount',
+    'supplierAccount', 'employeeAccount', 'shift', 'transactions'
+  ],
+  Sales: [
+    'pos', 'customers', 'sales', 'items', 'payments', 'shift',
+    'transactions', 'companyAccount', 'customersAccount'
+  ],
+  Cashier: ['pos', 'payments', 'shift', 'companyAccount'],
   Support: ['customers', 'repair'],
-  Receptionist: ['customers', 'repair'],
-  Technician: ['repair', 'stock']
+  Receptionist: ['customers', 'repair', 'sales'],
+  Technician: ['repair', 'stock', 'items']
 };
 
 const roleSeeds = [
@@ -80,19 +88,19 @@ const roleSeeds = [
   },
   {
     name: 'Manager',
-    description: 'Store Manager with access to reports and management functions',
+    description: 'Store Manager with comprehensive operational access',
     permissions: [],
     isActive: true
   },
   {
     name: 'Sales',
-    description: 'Sales staff with access to POS and basic functions',
+    description: 'Sales staff with access to POS, Payments, and Shifts',
     permissions: [],
     isActive: true
   },
   {
     name: 'Cashier',
-    description: 'Cashier with access to POS and payments',
+    description: 'Cashier with access to POS, Payments, and Shifts',
     permissions: [],
     isActive: true
   },
@@ -104,7 +112,7 @@ const roleSeeds = [
   },
   {
     name: 'Receptionist',
-    description: 'Front desk staff with basic access',
+    description: 'Front desk staff with basic sales and repair access',
     permissions: [],
     isActive: true
   },
@@ -138,16 +146,7 @@ const seedRoles = async () => {
 };
 
 function shouldHaveAccess(roleName, module) {
-  const accessMap = {
-    Admin: Object.keys(modulePermissions),
-    Manager: ['dashboard', 'customers', 'employee', 'sales', 'stock', 'intelligence'],
-    Sales: ['pos', 'customers', 'sales'],
-    Cashier: ['pos', 'payments'],
-    Support: ['customers', 'repair'],
-    Receptionist: ['customers', 'repair'],
-    Technician: ['repair', 'stock']
-  };
-  return accessMap[roleName]?.includes(module) ?? false;
+  return rolePermissionsMap[roleName]?.includes(module) ?? false;
 }
 
 const seedPermissionsAndRoles = async () => {

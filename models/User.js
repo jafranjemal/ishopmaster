@@ -77,7 +77,14 @@ userSchema.methods.hasRole = function (roleName) {
 
 // Method to check user permissions
 userSchema.methods.hasPermission = async function (module, action) {
-  if (!this.populated('roles')) {
+  // Ensure roles and their permissions are populated
+  const isRolesPopulated = this.populated('roles');
+  const isPermissionsPopulated = this.roles && this.roles.length > 0 &&
+    this.roles[0].permissions &&
+    this.roles[0].permissions.length > 0 &&
+    this.roles[0].permissions[0].module;
+
+  if (!isRolesPopulated || !isPermissionsPopulated) {
     await this.populate({
       path: 'roles',
       populate: { path: 'permissions' }
